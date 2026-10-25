@@ -11,7 +11,7 @@ Written in bash, with nothing beyond `bash`, `coreutils` and `util-linux`.
 
 ```sh
 make deb
-sudo dpkg -i build/pbus_0.1.0_all.deb
+sudo dpkg -i build/pbus_*_all.deb
 ```
 
 The service is enabled and started on install, and at every boot afterwards.
@@ -169,9 +169,17 @@ as a specific user.
 ## Development
 
 ```sh
-tests/run-tests.sh   # 53 end-to-end tests, unprivileged, under /tmp
+tests/run-tests.sh   # 60 end-to-end tests, unprivileged, under /tmp
 make deb             # builds the package with dpkg-deb
+make version         # prints the version
 ```
+
+The version lives in one place, the `VERSION` file at the root of the
+repository, which is what `prel` reads. `make` substitutes it into
+`lib/pbus/common.sh`, both manual pages and the Debian changelog as it
+installs, so nothing else carries a hardcoded number. Run straight from a
+source tree, `common.sh` finds its placeholder unsubstituted and reads
+`VERSION` itself, so `pbus version` is right without a build.
 
 The tests start a full daemon in a temporary directory: every path
 (`PBUS_ETC`, `PBUS_VAR`, `PBUS_RUN`, `PBUS_LOG`, `PBUS_LIB`, `PBUS_KEYSTORE`)

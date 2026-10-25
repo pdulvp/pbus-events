@@ -2,7 +2,24 @@
 # pbus - shared library, sourced by both the CLI and the daemon.
 # Nothing outside bash, coreutils and util-linux.
 
-PBUS_VERSION="0.1.0"
+# Substituted at build time with the contents of VERSION, at the root of the
+# repository, which is also what prel reads. The placeholder is kept here so
+# the source tree stays runnable without a build: when it survives, the
+# version is read straight from that file.
+PBUS_VERSION="@VERSION@"
+# Tested on the leading "@" rather than on the placeholder itself: the build
+# replaces every occurrence of the placeholder in this file, and a guard
+# spelling it out would be rewritten too, turning the test true after install.
+if [[ $PBUS_VERSION == @* ]]; then
+	_pbus_version_file="${BASH_SOURCE[0]%/*}/../../VERSION"
+	if [[ -r $_pbus_version_file ]]; then
+		read -r PBUS_VERSION <"$_pbus_version_file"
+	else
+		PBUS_VERSION="dev"
+	fi
+	unset _pbus_version_file
+fi
+
 PBUS_PROTO="PBUS2"
 
 # Every path can be overridden from the environment, so a complete instance

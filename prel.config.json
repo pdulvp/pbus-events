@@ -1,0 +1,5 @@
+{
+  "buildCommand": "make deb",
+  "releaseBuildCommand": "make deb",
+  "artifacts": ["build/*${version}_*.deb"]
+}

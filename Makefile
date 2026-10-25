@@ -5,8 +5,18 @@
 # make test                     end-to-end tests, unprivileged
 
 PACKAGE := pbus
-VERSION := $(shell sed -n 's/^PBUS_VERSION="\(.*\)"/\1/p' lib/pbus/common.sh)
+# Single source of truth for the version, shared with prel. It is substituted
+# into lib/pbus/common.sh, the manual pages and the Debian changelog at build
+# time; none of them carries a hardcoded number.
+VERSION := $(strip $(shell cat VERSION 2>/dev/null))
 ARCH    := all
+
+ifeq ($(VERSION),)
+$(error VERSION file is missing or empty at the root of the repository)
+endif
+
+# Copy a file, replacing @VERSION@ on the way.
+subst_version = sed -e 's|@VERSION@|$(VERSION)|g' $(1) > $(2) && chmod $(3) $(2)
 
 DESTDIR    ?=
 prefix     ?= /usr
@@ -24,16 +34,19 @@ BUILD := build
 STAGE := $(BUILD)/$(PACKAGE)_$(VERSION)_$(ARCH)
 DEB   := $(BUILD)/$(PACKAGE)_$(VERSION)_$(ARCH).deb
 
-.PHONY: all install uninstall deb test check clean
+.PHONY: all install uninstall deb test check version clean
 
 all:
-	@echo "$(PACKAGE) $(VERSION) - targets: install, deb, test, clean"
+	@echo "$(PACKAGE) $(VERSION) - targets: install, deb, test, version, clean"
+
+version:
+	@echo $(VERSION)
 
 install:
 	install -d -m 0755 $(DESTDIR)$(bindir) $(DESTDIR)$(sbindir) $(DESTDIR)$(libdir)
 	install -m 0755 bin/pbus       $(DESTDIR)$(bindir)/pbus
 	install -m 0755 sbin/pbusd     $(DESTDIR)$(sbindir)/pbusd
-	install -m 0644 lib/pbus/common.sh $(DESTDIR)$(libdir)/common.sh
+	$(call subst_version,lib/pbus/common.sh,$(DESTDIR)$(libdir)/common.sh,0644)
 	install -d -m 0755 $(DESTDIR)$(sysconfdir)/events.d $(DESTDIR)$(sysconfdir)/listeners.d
 	install -d -m 0700 $(DESTDIR)$(sysconfdir)/keys
 	install -m 0644 etc/pbus/pbus.conf $(DESTDIR)$(sysconfdir)/pbus.conf
@@ -44,14 +57,14 @@ install:
 	install -d -m 0755 $(DESTDIR)$(compdir)
 	install -m 0644 completion/pbus $(DESTDIR)$(compdir)/pbus
 	install -d -m 0755 $(DESTDIR)$(mandir)/man1 $(DESTDIR)$(mandir)/man8
-	install -m 0644 man/pbus.1  $(DESTDIR)$(mandir)/man1/pbus.1
-	install -m 0644 man/pbusd.8 $(DESTDIR)$(mandir)/man8/pbusd.8
+	$(call subst_version,man/pbus.1,$(DESTDIR)$(mandir)/man1/pbus.1,0644)
+	$(call subst_version,man/pbusd.8,$(DESTDIR)$(mandir)/man8/pbusd.8,0644)
 	gzip -9nf $(DESTDIR)$(mandir)/man1/pbus.1 $(DESTDIR)$(mandir)/man8/pbusd.8
 	install -d -m 0755 $(DESTDIR)$(docdir)
 	install -m 0644 README.md $(DESTDIR)$(docdir)/README.md
 	install -m 0644 examples/prel-release.md $(DESTDIR)$(docdir)/prel-release.md
 	install -m 0644 packaging/copyright $(DESTDIR)$(docdir)/copyright
-	install -m 0644 packaging/changelog $(DESTDIR)$(docdir)/changelog.Debian
+	$(call subst_version,packaging/changelog,$(DESTDIR)$(docdir)/changelog.Debian,0644)
 	gzip -9nf $(DESTDIR)$(docdir)/changelog.Debian
 	install -d -m 0755 $(DESTDIR)/var/log/pbus
 	install -d -m 0750 $(DESTDIR)/var/lib/pbus

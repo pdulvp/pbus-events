@@ -1,4 +1,4 @@
-pbus (0.1.0) unstable; urgency=medium
+pbus (@VERSION@) unstable; urgency=medium
 
   * First release: named-pipe dispatcher daemon, CLI and interactive session,
     listeners as files under /etc/pbus, per-event keys, systemd unit started
