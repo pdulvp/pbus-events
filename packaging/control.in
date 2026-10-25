@@ -4,6 +4,7 @@ Section: admin
 Priority: optional
 Architecture: @ARCH@
 Depends: bash (>= 5.0), coreutils (>= 8.30), util-linux, sed, grep, init-system-helpers (>= 1.51)
+Suggests: libglib2.0-bin | libnotify-bin
 Maintainer: pdulvp <pdulvp@laposte.net>
 Installed-Size: @SIZE@
 Description: system event dispatcher, an event-driven cron
@@ -18,4 +19,6 @@ Description: system event dispatcher, an event-driven cron
  Each event gets a key when it is created, and emitters must present it; only
  a salted hash of that key is kept on disk.
  .
- The package uses nothing beyond bash, coreutils and util-linux.
+ The package uses nothing beyond bash, coreutils and util-linux. The optional
+ pbus-notify helper pops a desktop notification from a listener, and wants
+ either gdbus or notify-send for that.

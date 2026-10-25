@@ -160,6 +160,22 @@ A named pipe is enough, adds no dependency, and writes under 4096 bytes to it
 are atomic — concurrent emissions are safe with no lock. Larger payloads go
 through a spool in `/run/pbus`.
 
+## Desktop notifications
+
+`pbus-notify` pops a notification on a user's desktop from a listener:
+
+```sh
+sudo pbus register-listener release.published --id popup \
+     'pbus-notify -u alice "Release $PBUS_PAYLOAD published"'
+```
+
+A notification is a D-Bus message to a daemon inside a graphical session,
+while `pbusd` runs as root outside any session, so a bare `notify-send` in a
+listener fails. `pbus-notify` points D-Bus at the target user's session bus
+and becomes that user with `setpriv` first, which dbus-daemon requires. It
+uses `notify-send` when installed and `gdbus` otherwise; neither is a hard
+dependency. See [examples/desktop-notification.md](examples/desktop-notification.md).
+
 ## Worked examples
 
 `examples/prel-release.md` walks through "a release is published, the site
@@ -176,7 +192,7 @@ as a plain copy at `/usr/share/doc/pbus/LICENSE`.
 ## Development
 
 ```sh
-tests/run-tests.sh   # 63 end-to-end tests, unprivileged, under /tmp
+tests/run-tests.sh   # 73 end-to-end tests, unprivileged, under /tmp
 make deb             # builds the package with dpkg-deb
 make version         # prints the version
 ```

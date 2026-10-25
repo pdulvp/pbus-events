@@ -1,0 +1,98 @@
+.TH PBUS-NOTIFY 1 "2026-10-25" "pbus @VERSION@" "User Commands"
+.SH NAME
+pbus-notify \- send a desktop notification from a pbus listener
+.SH SYNOPSIS
+.B pbus-notify
+.RI [ options ]
+.I summary
+.RI [ body ]
+.SH DESCRIPTION
+A desktop notification is a D-Bus message to a daemon running inside a user's
+graphical session.
+.BR pbusd (8)
+runs as root, outside any session, and hands its listeners a scrubbed
+environment, so a bare
+.BR notify-send (1)
+fails with
+.IR "Cannot autolaunch D-Bus without X11 $DISPLAY" .
+.PP
+.B pbus-notify
+supplies what is missing: it points D-Bus at the target user's session bus
+through
+.B XDG_RUNTIME_DIR
+and
+.BR DBUS_SESSION_BUS_ADDRESS ,
+and, when it runs as root for another user, drops to that user with
+.BR setpriv (1)
+first. dbus-daemon authenticates its peer by credentials and refuses a uid
+that does not own the bus, so dropping privileges is required, not merely
+tidy.
+.PP
+It sends through
+.BR notify-send (1)
+when that is installed, and through
+.BR gdbus (1)
+otherwise.
+.SH OPTIONS
+.TP
+.BI \-u " USER" "\fR, \fP" \-\-user " USER"
+Whose desktop to notify. Defaults to
+.BR $USER ,
+which
+.B pbusd
+sets to the listener's
+.I user
+field.
+.TP
+.BI \-i " NAME" "\fR, \fP" \-\-icon " NAME"
+Icon name, by default
+.BR dialog-information .
+.TP
+.BI \-t " MS" "\fR, \fP" \-\-timeout " MS"
+How long the popup stays, in milliseconds. Many daemons ignore it.
+.TP
+.BI \-U " LEVEL" "\fR, \fP" \-\-urgency " LEVEL"
+.BR low ", " normal " or " critical .
+.TP
+.BR \-h ", " \-\-help
+Print the usage summary.
+.SH EXIT STATUS
+.TP
+.B 0
+Sent.
+.TP
+.B 1
+Unknown user.
+.TP
+.B 2
+Usage error.
+.TP
+.B 3
+That user has no session bus; nobody is logged in to a desktop.
+.TP
+.B 4
+Neither
+.B notify-send
+nor
+.B gdbus
+is installed.
+.TP
+.B 5
+Only root can notify another user.
+.SH EXAMPLE
+.PP
+.RS
+.nf
+pbus register-listener release.published --id popup \\
+    'pbus-notify -u alice "Release $PBUS_PAYLOAD published"'
+.fi
+.RE
+.PP
+Single quotes matter:
+.B $PBUS_PAYLOAD
+must be expanded when the event fires, not when the listener is registered.
+.SH SEE ALSO
+.BR pbus (1),
+.BR pbusd (8),
+.BR notify-send (1),
+.BR setpriv (1)
