@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+	remove)
+		if [ -d /run/systemd/system ]; then
+			systemctl daemon-reload || true
+		fi
+		rm -rf /run/pbus
+		;;
+	purge)
+		if [ -d /run/systemd/system ]; then
+			systemctl disable pbus.service || true
+			systemctl daemon-reload || true
+		fi
+		# Secrets, declarations and the log do not survive a purge; a plain
+		# removal keeps them.
+		rm -rf /run/pbus /var/lib/pbus /var/log/pbus
+		rm -rf /etc/pbus/events.d /etc/pbus/listeners.d /etc/pbus/keys
+		rmdir /etc/pbus 2>/dev/null || true
+		;;
+esac
+
+exit 0

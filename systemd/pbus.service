@@ -1,0 +1,23 @@
+[Unit]
+Description=pbus - system event dispatcher
+Documentation=man:pbus(1) man:pbusd(8)
+After=network.target
+# RuntimeDirectory creates /run/pbus before the daemon starts.
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/pbusd --foreground
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=pbus
+RuntimeDirectoryMode=0755
+StateDirectory=pbus
+StateDirectoryMode=0750
+LogsDirectory=pbus
+LogsDirectoryMode=0755
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

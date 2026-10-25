@@ -1,0 +1,746 @@
+#!/bin/bash
+# pbus - command line interface to the pbus event dispatcher.
+
+set -uo pipefail
+
+PBUS_LIB="${PBUS_LIB:-/usr/lib/pbus}"
+# shellcheck source=../lib/pbus/common.sh
+source "$PBUS_LIB/common.sh" || { echo "pbus: library not found ($PBUS_LIB/common.sh)" >&2; exit 1; }
+
+pbus_load_conf
+
+# Where the CLI keeps the keys the current user holds.
+if [[ -n ${PBUS_KEYSTORE:-} ]]; then
+	:
+elif (( EUID == 0 )); then
+	PBUS_KEYSTORE="$PBUS_ETC/keys"
+else
+	PBUS_KEYSTORE="${XDG_CONFIG_HOME:-$HOME/.config}/pbus/keys"
+fi
+
+# ------------------------------------------------------------- helpers ---
+
+need_admin() {
+	if [[ ! -w $PBUS_ETC ]]; then
+		pbus_die "not permitted: \"$1\" needs write access to $PBUS_ETC (try sudo)"
+	fi
+}
+
+ensure_dirs() {
+	mkdir -p "$PBUS_EVENTS_DIR" "$PBUS_LISTENERS_DIR" 2>/dev/null
+	if (( EUID == 0 )); then
+		mkdir -p "$PBUS_AUTH_DIR" 2>/dev/null && chmod 0700 "$PBUS_AUTH_DIR" 2>/dev/null
+	fi
+	return 0
+}
+
+keystore_path() { printf '%s/%s\n' "$PBUS_KEYSTORE" "$1"; }
+
+store_key() {
+	local event="$1" key="$2" path
+	path=$(keystore_path "$event")
+	mkdir -p "$PBUS_KEYSTORE" || return 1
+	chmod 0700 "$PBUS_KEYSTORE" 2>/dev/null
+	( umask 077; printf '%s\n' "$key" >"$path" ) || return 1
+	chmod 0600 "$path" 2>/dev/null
+	printf '%s\n' "$path"
+}
+
+# Find an event's key: explicit option, then file, then environment, then the
+# local keyring.
+resolve_key() {
+	local event="$1" opt_key="$2" opt_file="$3" path
+	if [[ -n $opt_key ]]; then printf '%s\n' "$opt_key"; return 0; fi
+	if [[ -n $opt_file ]]; then
+		[[ -r $opt_file ]] || pbus_die "key file is unreadable: $opt_file"
+		head -n1 "$opt_file" | tr -d '\r\n'; echo; return 0
+	fi
+	if [[ -n ${PBUS_KEY:-} ]]; then printf '%s\n' "$PBUS_KEY"; return 0; fi
+	path=$(keystore_path "$event")
+	if [[ -r $path ]]; then head -n1 "$path" | tr -d '\r\n'; echo; return 0; fi
+	if (( EUID == 0 )) && [[ -r "$PBUS_ETC/keys/$event" ]]; then
+		head -n1 "$PBUS_ETC/keys/$event" | tr -d '\r\n'; echo; return 0
+	fi
+	return 1
+}
+
+event_auth_mode() {
+	local event="$1" mode
+	mode=$(pbus_kv_get "$(pbus_event_file "$event")" auth) || mode="key"
+	printf '%s\n' "${mode:-key}"
+}
+
+# -------------------------------------------------------------- events ---
+
+cmd_register_event() {
+	local name="" desc="" auth="key" save=0 force=0
+	while (( $# )); do
+		case "$1" in
+			-d|--description) desc="${2:-}"; shift 2 ;;
+			--no-key) auth="none"; shift ;;
+			-s|--save) save=1; shift ;;
+			-f|--force) force=1; shift ;;
+			-*) pbus_die "unknown option: $1" ;;
+			*) [[ -z $name ]] && name="$1" || pbus_die "unexpected argument: $1"; shift ;;
+		esac
+	done
+	[[ -n $name ]] || pbus_die "usage: pbus register-event <name> [-d description] [--no-key] [--save]"
+	pbus_valid_name "$name" || pbus_die "invalid event name: $name (letters, digits, . _ : -)"
+	need_admin "register-event"
+	ensure_dirs
+
+	local ef; ef=$(pbus_event_file "$name")
+	if [[ -e $ef && $force -eq 0 ]]; then
+		pbus_die "event $name already exists (use --force to overwrite it)"
+	fi
+
+	: >"$ef" || pbus_die "cannot write $ef"
+	chmod 0644 "$ef"
+	pbus_kv_set "$ef" name "$name"
+	pbus_kv_set "$ef" description "$desc"
+	pbus_kv_set "$ef" auth "$auth"
+	pbus_kv_set "$ef" created "$(pbus_timestamp)"
+
+	if [[ $auth == none ]]; then
+		rm -f "$(pbus_auth_file "$name")"
+		printf 'Event "%s" registered without a key: any local emission will be accepted.\n' "$name"
+		return 0
+	fi
+
+	local key salt hash af
+	key=$(pbus_gen_key)
+	salt=$(pbus_random_hex 16)
+	hash=$(pbus_hash "$salt" "$key")
+	af=$(pbus_auth_file "$name")
+	mkdir -p "$PBUS_AUTH_DIR" && chmod 0700 "$PBUS_AUTH_DIR"
+	( umask 077; : >"$af" ) || pbus_die "cannot write $af"
+	pbus_kv_set "$af" salt "$salt"
+	pbus_kv_set "$af" hash "$hash"
+	pbus_kv_set "$af" rotated "$(pbus_timestamp)"
+	chmod 0600 "$af"
+
+	printf 'Event "%s" registered.\n\n' "$name"
+	printf '  key: %s\n\n' "$key"
+	printf 'This key is shown once; only a salted hash of it is kept.\n'
+	if (( save )); then
+		local p; p=$(store_key "$name" "$key") \
+			&& printf 'A copy was saved to %s (readable by you only).\n' "$p"
+	else
+		printf 'To keep it in your keyring: pbus save-key %s\n' "$name"
+	fi
+	printf 'To emit: PBUS_KEY=... pbus emit %s --payload "..."\n' "$name"
+}
+
+cmd_unregister_event() {
+	local name="" purge=0
+	while (( $# )); do
+		case "$1" in
+			--purge-listeners) purge=1; shift ;;
+			-*) pbus_die "unknown option: $1" ;;
+			*) name="$1"; shift ;;
+		esac
+	done
+	[[ -n $name ]] || pbus_die "usage: pbus unregister-event <name> [--purge-listeners]"
+	need_admin "unregister-event"
+	pbus_event_exists "$name" || pbus_die "unknown event: $name"
+	rm -f "$(pbus_event_file "$name")" "$(pbus_auth_file "$name")" "$(keystore_path "$name")"
+	printf 'Event "%s" removed.\n' "$name"
+	if (( purge )); then
+		local lid n=0
+		while read -r lid; do
+			[[ -n $lid ]] || continue
+			if [[ $(pbus_kv_get "$(pbus_listener_file "$lid")" event) == "$name" ]]; then
+				rm -f "$(pbus_listener_file "$lid")"; (( n++ ))
+			fi
+		done < <(pbus_list_listener_ids)
+		printf '%d listener(s) removed.\n' "$n"
+	fi
+}
+
+cmd_rotate_key() {
+	local name="" save=0
+	while (( $# )); do
+		case "$1" in
+			-s|--save) save=1; shift ;;
+			-*) pbus_die "unknown option: $1" ;;
+			*) name="$1"; shift ;;
+		esac
+	done
+	[[ -n $name ]] || pbus_die "usage: pbus rotate-key <event> [--save]"
+	need_admin "rotate-key"
+	pbus_event_exists "$name" || pbus_die "unknown event: $name"
+	[[ $(event_auth_mode "$name") == none ]] && pbus_die "event $name is declared without a key"
+	local key salt hash af
+	key=$(pbus_gen_key); salt=$(pbus_random_hex 16); hash=$(pbus_hash "$salt" "$key")
+	af=$(pbus_auth_file "$name")
+	( umask 077; : >"$af" )
+	pbus_kv_set "$af" salt "$salt"
+	pbus_kv_set "$af" hash "$hash"
+	pbus_kv_set "$af" rotated "$(pbus_timestamp)"
+	chmod 0600 "$af"
+	printf 'New key for "%s":\n\n  %s\n\nThe previous one is invalid as of now.\n' "$name" "$key"
+	if (( save )); then
+		local p; p=$(store_key "$name" "$key") && printf 'A copy was saved to %s.\n' "$p"
+	fi
+}
+
+cmd_save_key() {
+	local name="" key=""
+	while (( $# )); do
+		case "$1" in
+			-k|--key) key="${2:-}"; shift 2 ;;
+			-*) pbus_die "unknown option: $1" ;;
+			*) name="$1"; shift ;;
+		esac
+	done
+	[[ -n $name ]] || pbus_die "usage: pbus save-key <event> [--key KEY]"
+	if [[ -z $key ]]; then
+		if [[ -t 0 ]]; then
+			read -r -s -p "Key for \"$name\": " key; echo
+		else
+			read -r key
+		fi
+	fi
+	[[ -n $key ]] || pbus_die "empty key"
+	local p; p=$(store_key "$name" "$key") || pbus_die "cannot write the keyring"
+	printf 'Key saved to %s\n' "$p"
+}
+
+cmd_list_events() {
+	local n ef desc mode count lid
+	# Listener patterns are collected once, then matched against each event
+	# name, so a listener on "release.*" counts for "release.published".
+	local -a pats=()
+	while read -r lid; do
+		[[ -n $lid ]] || continue
+		local e; e=$(pbus_kv_get "$(pbus_listener_file "$lid")" event) || continue
+		pats+=("$e")
+	done < <(pbus_list_listener_ids)
+
+	local any=0
+	printf '%s %s %s %s\n' "$(pbus_pad EVENT 24)" "$(pbus_pad KEY 5)" \
+		"$(pbus_pad LISTENERS 9)" "DESCRIPTION"
+	while read -r n; do
+		[[ -n $n ]] || continue
+		any=1
+		ef=$(pbus_event_file "$n")
+		desc=$(pbus_kv_get "$ef" description) || desc=""
+		mode=$(pbus_kv_get "$ef" auth) || mode="key"
+		count=0
+		local pat
+		for pat in ${pats[@]+"${pats[@]}"}; do
+			# shellcheck disable=SC2053
+			[[ $n == $pat ]] && (( count++ ))
+		done
+		[[ $mode == none ]] && mode="no" || mode="yes"
+		printf '%s %s %s %s\n' "$(pbus_pad "$n" 24)" "$(pbus_pad "$mode" 5)" \
+			"$(pbus_pad "$count" 9)" "$desc"
+	done < <(pbus_list_event_names | sort)
+	(( any )) || printf '(no event registered; see pbus register-event)\n'
+}
+
+cmd_show_event() {
+	local name="${1:-}"
+	[[ -n $name ]] || pbus_die "usage: pbus show-event <name>"
+	pbus_event_exists "$name" || pbus_die "unknown event: $name"
+	local -A E=(); pbus_kv_load "$(pbus_event_file "$name")" E
+	printf 'event       : %s\n' "$name"
+	printf 'description : %s\n' "${E[description]:-}"
+	printf 'key required: %s\n' "$([[ ${E[auth]:-key} == none ]] && echo no || echo yes)"
+	printf 'created     : %s\n' "${E[created]:-?}"
+	printf 'file        : %s\n' "$(pbus_event_file "$name")"
+	local af; af=$(pbus_auth_file "$name")
+	if [[ -r $af ]]; then
+		printf 'key rotated : %s\n' "$(pbus_kv_get "$af" rotated)"
+	fi
+	[[ -r $(keystore_path "$name") ]] && printf 'keyring     : %s\n' "$(keystore_path "$name")"
+	printf '\nlisteners:\n'
+	cmd_list_listeners "$name" | sed '1d;s/^/  /'
+}
+
+# ----------------------------------------------------------- listeners ---
+
+next_listener_id() {
+	local base="$1" i=1 id
+	base=${base//[^A-Za-z0-9._-]/-}
+	while :; do
+		printf -v id '%s-%02d' "$base" "$i"
+		[[ -e $(pbus_listener_file "$id") ]] || { printf '%s\n' "$id"; return 0; }
+		(( i++ ))
+	done
+}
+
+cmd_register_listener() {
+	local event="" id="" user="" wd="/" to="" desc="" disabled=0
+	local -a cmdparts=()
+	while (( $# )); do
+		case "$1" in
+			--id) id="${2:-}"; shift 2 ;;
+			-u|--user) user="${2:-}"; shift 2 ;;
+			-w|--workdir) wd="${2:-}"; shift 2 ;;
+			-t|--timeout) to="${2:-}"; shift 2 ;;
+			-d|--description) desc="${2:-}"; shift 2 ;;
+			--disabled) disabled=1; shift ;;
+			--) shift; break ;;
+			-*) pbus_die "unknown option: $1" ;;
+			*)
+				if [[ -z $event ]]; then event="$1"; shift
+				else break; fi
+				;;
+		esac
+	done
+	cmdparts=("$@")
+	[[ -n $event && ${#cmdparts[@]} -gt 0 ]] || pbus_die \
+		"usage: pbus register-listener <event> [options] <command...>"
+	pbus_valid_pattern "$event" || pbus_die "invalid event pattern: $event"
+	need_admin "register-listener"
+	ensure_dirs
+
+	# A single argument is a shell line, kept verbatim, which allows
+	# "cmd1 && cmd2". Several arguments are quoted one by one, so the quoting
+	# the user typed survives the trip through the config file.
+	local cmd
+	if (( ${#cmdparts[@]} == 1 )); then
+		cmd="${cmdparts[0]}"
+	else
+		local part
+		cmd=""
+		for part in "${cmdparts[@]}"; do
+			cmd+="$(pbus_shquote "$part") "
+		done
+		cmd="${cmd% }"
+	fi
+	[[ $cmd == *$'\n'* ]] && pbus_die "a command cannot contain a newline"
+	[[ -n $user ]] && { getent passwd "$user" >/dev/null || pbus_die "unknown user: $user"; }
+	[[ -n $to && ! $to =~ ^[0-9]+$ ]] && pbus_die "invalid timeout: $to"
+
+	if [[ -z $id ]]; then
+		id=$(next_listener_id "$event")
+	else
+		pbus_valid_name "$id" || pbus_die "invalid identifier: $id"
+		[[ -e $(pbus_listener_file "$id") ]] && pbus_die "listener $id already exists"
+	fi
+
+	if [[ $event != *[\*\?]* ]] && ! pbus_event_exists "$event"; then
+		pbus_warn "warning: event \"$event\" is not registered yet."
+	fi
+
+	local lf; lf=$(pbus_listener_file "$id")
+	: >"$lf" || pbus_die "cannot write $lf"
+	chmod 0644 "$lf"
+	pbus_kv_set "$lf" id "$id"
+	pbus_kv_set "$lf" event "$event"
+	pbus_kv_set "$lf" command "$cmd"
+	pbus_kv_set "$lf" user "$user"
+	pbus_kv_set "$lf" workdir "$wd"
+	pbus_kv_set "$lf" timeout "${to:-$PBUS_DEFAULT_TIMEOUT}"
+	pbus_kv_set "$lf" enabled "$(( disabled ? 0 : 1 ))"
+	pbus_kv_set "$lf" description "$desc"
+	pbus_kv_set "$lf" created "$(pbus_timestamp)"
+	printf 'Listener "%s" registered: %s -> %s\n' "$id" "$event" "$cmd"
+	printf 'File: %s\n' "$lf"
+}
+
+cmd_list_listeners() {
+	local filter="${1:-}" lid
+	local -A L
+	printf '%s %s %s %s %s\n' "$(pbus_pad ID 18)" "$(pbus_pad EVENT 18)" \
+		"$(pbus_pad STATE 8)" "$(pbus_pad USER 10)" "COMMAND"
+	local any=0
+	while read -r lid; do
+		[[ -n $lid ]] || continue
+		L=(); pbus_kv_load "$(pbus_listener_file "$lid")" L || continue
+		if [[ -n $filter ]]; then
+			# shellcheck disable=SC2053
+			[[ ${L[event]:-} == "$filter" || $filter == ${L[event]:-} ]] || continue
+		fi
+		any=1
+		printf '%s %s %s %s %s\n' "$(pbus_pad "$lid" 18)" "$(pbus_pad "${L[event]:-?}" 18)" \
+			"$(pbus_pad "$([[ ${L[enabled]:-1} == 1 ]] && echo enabled || echo disabled)" 8)" \
+			"$(pbus_pad "${L[user]:-root}" 10)" "${L[command]:-}"
+	done < <(pbus_list_listener_ids | sort)
+	(( any )) || printf '(no listener)\n'
+}
+
+cmd_show_listener() {
+	local id="${1:-}"
+	[[ -n $id ]] || pbus_die "usage: pbus show-listener <id>"
+	local lf; lf=$(pbus_listener_file "$id")
+	[[ -f $lf ]] || pbus_die "unknown listener: $id"
+	cat "$lf"
+	printf '\nfile=%s\n' "$lf"
+}
+
+cmd_unregister_listener() {
+	local id="${1:-}"
+	[[ -n $id ]] || pbus_die "usage: pbus unregister-listener <id>"
+	need_admin "unregister-listener"
+	local lf; lf=$(pbus_listener_file "$id")
+	[[ -f $lf ]] || pbus_die "unknown listener: $id"
+	rm -f "$lf"
+	printf 'Listener "%s" removed.\n' "$id"
+}
+
+cmd_set_enabled() {
+	local id="${1:-}" value="$2"
+	[[ -n $id ]] || pbus_die "usage: pbus enable|disable <id>"
+	need_admin "enable/disable"
+	local lf; lf=$(pbus_listener_file "$id")
+	[[ -f $lf ]] || pbus_die "unknown listener: $id"
+	pbus_kv_set "$lf" enabled "$value"
+	printf 'Listener "%s" %s.\n' "$id" "$([[ $value == 1 ]] && echo enabled || echo disabled)"
+}
+
+# ------------------------------------------------------------ emission ---
+
+# Writes one line to the pipe without ever exposing the key on a command
+# line, and without hanging forever when no daemon is there.
+write_to_bus() {
+	local line="$1" wait_s="${2:-5}" pid i
+	[[ -p $PBUS_FIFO ]] || pbus_die "the bus does not exist ($PBUS_FIFO): is pbusd running?"
+	[[ -w $PBUS_FIFO ]] || pbus_die "not permitted to write to $PBUS_FIFO"
+	( printf '%s\n' "$line" >"$PBUS_FIFO" ) &
+	pid=$!
+	for (( i = 0; i < wait_s * 20; i++ )); do
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 0.05
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill "$pid" 2>/dev/null
+		wait "$pid" 2>/dev/null
+		return 1
+	fi
+	wait "$pid"
+}
+
+# Waits for the daemon's verdict on one emission. Prints nothing; returns the
+# exit status "pbus emit" should carry, and sets REPLY_DETAIL.
+REPLY_DETAIL=""
+await_reply() {
+	local nonce="$1" wait_s="$2" f="$PBUS_REPLY/$1" i status detail
+	REPLY_DETAIL=""
+	for (( i = 0; i < wait_s * 50; i++ )); do
+		if [[ -r $f ]]; then
+			read -r status detail <"$f" 2>/dev/null
+			rm -f "$f" 2>/dev/null        # best effort: the sticky bit may forbid it
+			REPLY_DETAIL="$detail"
+			case "$status" in
+				accepted)              return 0 ;;
+				denied)
+					case "$detail" in
+						unknown-event) return 4 ;;
+						*)             return 3 ;;
+					esac ;;
+				*) return 5 ;;
+			esac
+		fi
+		sleep 0.02
+	done
+	return 5
+}
+
+cmd_emit() {
+	local event="" payload="" pfile="" use_stdin=0 key="" kfile="" quiet=0
+	local wait_ack=1 ack_timeout=5
+	while (( $# )); do
+		case "$1" in
+			-p|--payload) payload="${2:-}"; shift 2 ;;
+			-F|--payload-file) pfile="${2:-}"; shift 2 ;;
+			--stdin|-) use_stdin=1; shift ;;
+			-k|--key) key="${2:-}"; shift 2 ;;
+			-K|--key-file) kfile="${2:-}"; shift 2 ;;
+			-q|--quiet) quiet=1; shift ;;
+			--no-wait) wait_ack=0; shift ;;
+			--ack-timeout) ack_timeout="${2:-5}"; shift 2 ;;
+			-*) pbus_die "unknown option: $1" ;;
+			*) [[ -z $event ]] && event="$1" || pbus_die "unexpected argument: $1"; shift ;;
+		esac
+	done
+	[[ $ack_timeout =~ ^[0-9]+$ ]] || pbus_die "invalid --ack-timeout: $ack_timeout"
+	[[ -n $event ]] || pbus_die "usage: pbus emit <event> [--payload ... | --payload-file F | --stdin] [--key ...]"
+	pbus_valid_name "$event" || pbus_die "invalid event name: $event"
+
+	if (( use_stdin )); then
+		payload=$(cat)
+	elif [[ -n $pfile ]]; then
+		[[ -r $pfile ]] || pbus_die "unreadable file: $pfile"
+		payload=$(cat "$pfile")
+	fi
+
+	local mode auth="-"
+	mode=$(event_auth_mode "$event")
+	if [[ $mode != none ]]; then
+		auth=$(resolve_key "$event" "$key" "$kfile") || pbus_die \
+			"no key found for \"$event\": use --key, --key-file, PBUS_KEY or pbus save-key"
+		[[ -n $auth ]] || pbus_die "empty key for \"$event\""
+		# The key travels in one field of the protocol line: no space, no tab,
+		# no newline.
+		[[ $auth == *[[:space:]]* ]] && pbus_die "malformed key: it cannot contain spaces or tabs"
+	fi
+
+	local nonce ts enc line
+	nonce=$(pbus_random_hex 8)
+	ts=$(pbus_timestamp)
+	enc=$(printf '%s' "$payload" | base64 -w0)
+	[[ -z $enc ]] && enc="-"
+
+	printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$PBUS_PROTO" "$event" "$auth" "$nonce" "$ts" "$wait_ack" "$enc"
+	if (( ${#line} > PBUS_MAX_LINE )); then
+		# Payload too large for one atomic write: it goes through the spool,
+		# and the line carries only a marker.
+		local sf="$PBUS_SPOOL/$nonce"
+		[[ -d $PBUS_SPOOL ]] || pbus_die "spool is missing ($PBUS_SPOOL): is pbusd running?"
+		( umask 077; printf '%s' "$payload" >"$sf" ) || pbus_die "cannot write to the spool"
+		chmod 0644 "$sf" 2>/dev/null
+		printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$PBUS_PROTO" "$event" "$auth" "$nonce" "$ts" "$wait_ack" "@spool"
+	fi
+
+	if ! write_to_bus "$line"; then
+		rm -f "$PBUS_SPOOL/$nonce" 2>/dev/null
+		pbus_die "cannot emit: no daemon listening on $PBUS_FIFO"
+	fi
+
+	# Writing to the bus only proves the line was queued. Unless asked not to,
+	# wait for the daemon's verdict so a refused key is an error here and not
+	# just a line in the log.
+	if (( ! wait_ack )); then
+		(( quiet )) || printf 'Event "%s" queued (id %s), not waiting for acknowledgement.\n' "$event" "$nonce"
+		return 0
+	fi
+
+	local rc
+	await_reply "$nonce" "$ack_timeout"
+	rc=$?
+	case "$rc" in
+		0)
+			if (( ! quiet )); then
+				if [[ ${REPLY_DETAIL:-0} == 0 ]]; then
+					printf 'Event "%s" accepted (id %s), but no listener matched.\n' "$event" "$nonce"
+				else
+					printf 'Event "%s" accepted (id %s), %s listener(s) triggered.\n' \
+						"$event" "$nonce" "$REPLY_DETAIL"
+				fi
+			fi ;;
+		3) printf 'pbus: event "%s" refused: the key is wrong (id %s)\n' "$event" "$nonce" >&2 ;;
+		4) printf 'pbus: event "%s" refused: the daemon does not know this event (id %s)\n' "$event" "$nonce" >&2 ;;
+		5) printf 'pbus: event "%s" was written to the bus but the daemon did not acknowledge it within %ss (id %s)\n' \
+				"$event" "$ack_timeout" "$nonce" >&2 ;;
+	esac
+	return "$rc"
+}
+
+cmd_test() {
+	local event="${1:-}"
+	[[ -n $event ]] || pbus_die "usage: pbus test <event>"
+	printf 'What "%s" would trigger:\n\n' "$event"
+	local lid found=0
+	local -A L
+	while read -r lid; do
+		[[ -n $lid ]] || continue
+		L=(); pbus_kv_load "$(pbus_listener_file "$lid")" L || continue
+		[[ ${L[enabled]:-1} == 1 ]] || continue
+		# shellcheck disable=SC2053
+		[[ $event == ${L[event]:-} ]] || continue
+		found=1
+		printf '  %-18s %s\n' "$lid" "${L[command]:-}"
+		printf '  %-18s (user=%s workdir=%s timeout=%ss)\n\n' "" "${L[user]:-root}" \
+			"${L[workdir]:-/}" "${L[timeout]:-$PBUS_DEFAULT_TIMEOUT}"
+	done < <(pbus_list_listener_ids | sort)
+	(( found )) || printf '  (no enabled listener matches)\n'
+}
+
+# --------------------------------------------------------------- misc ----
+
+cmd_status() {
+	local pid
+	if pid=$(pbus_daemon_pid); then
+		printf 'pbusd      : running (pid %s)\n' "$pid"
+	else
+		printf 'pbusd      : stopped\n'
+	fi
+	printf 'bus        : %s %s\n' "$PBUS_FIFO" "$([[ -p $PBUS_FIFO ]] && echo "(ready)" || echo "(missing)")"
+	printf 'config     : %s\n' "$PBUS_ETC"
+	printf 'log        : %s\n' "$PBUS_LOG"
+	local -A S=()
+	if pbus_kv_load "$PBUS_RUN/stats" S; then
+		printf 'started    : %s\n' "${S[started]:-?}"
+		printf 'dispatched : %s event(s), %s job(s)\n' "${S[events]:-0}" "${S[jobs]:-0}"
+	fi
+	printf 'events     : %s registered\n' "$(pbus_list_event_names | wc -l)"
+	printf 'listeners  : %s registered\n' "$(pbus_list_listener_ids | wc -l)"
+	printf 'version    : %s\n' "$PBUS_VERSION"
+}
+
+cmd_log() {
+	local n=50 follow=0
+	while (( $# )); do
+		case "$1" in
+			-n) n="${2:-50}"; shift 2 ;;
+			-f|--follow) follow=1; shift ;;
+			*) shift ;;
+		esac
+	done
+	[[ -r $PBUS_LOG ]] || pbus_die "log is unreadable: $PBUS_LOG"
+	if (( follow )); then tail -n "$n" -f "$PBUS_LOG"; else tail -n "$n" "$PBUS_LOG"; fi
+}
+
+cmd_reload() {
+	local pid
+	pid=$(pbus_daemon_pid) || pbus_die "pbusd is not running"
+	kill -HUP "$pid" && printf 'Reload signal sent to pbusd (pid %s).\n' "$pid"
+	printf 'Note: events and listeners are re-read on every emission, so they never need a reload.\n'
+}
+
+cmd_help() {
+	cat <<'EOT'
+pbus - system event dispatcher.
+
+EVENTS
+  list-events                       list events and how many listeners each has
+  show-event <name>                 details of one event
+  register-event <name> [options]   declare an event and return its key
+       -d, --description TEXT
+       --no-key                     event with no authentication
+       -s, --save                   keep the key in your keyring
+       -f, --force                  overwrite an existing event
+  unregister-event <name> [--purge-listeners]
+  rotate-key <name> [--save]        replace the key
+  save-key <name> [--key KEY]       put a key in your keyring
+
+LISTENERS
+  register-listener <event> [options] <command...>
+       --id ID                      identifier (derived from the event otherwise)
+       -u, --user USER              run the command as this user
+       -w, --workdir DIR            working directory (default /)
+       -t, --timeout SECONDS        maximum run time
+       -d, --description TEXT
+       --disabled                   register without enabling
+  list-listeners [event]
+  show-listener <id>
+  unregister-listener <id>
+  enable <id> | disable <id>
+
+EMISSION
+  emit <event> [options]
+       -p, --payload TEXT           payload
+       -F, --payload-file FILE
+       --stdin                      read the payload from standard input
+       -k, --key KEY                (visible in ps: prefer the ones below)
+       -K, --key-file FILE
+       -q, --quiet
+       --no-wait                    do not wait for the daemon's verdict
+       --ack-timeout SECONDS        how long to wait for it (default 5)
+  test <event>                      show what would run, without running it
+
+MISC
+  status | log [-n N] [-f] | reload | shell | help | version
+
+There is no "*" event: a listener, however, may subscribe to a glob pattern
+such as "release.*".
+
+A key is looked up in this order: --key, --key-file, $PBUS_KEY, then the
+keyring (~/.config/pbus/keys/<event>, or /etc/pbus/keys/<event> for root).
+
+"pbus emit" waits for the daemon's verdict and exits 0 when the event was
+accepted, 3 when the key was refused, 4 when the event is unknown, and 5 when
+no acknowledgement arrived. It never waits for the triggered commands
+themselves.
+
+Variables available to a triggered command:
+  PBUS_EVENT, PBUS_PAYLOAD (also on standard input), PBUS_EVENT_ID,
+  PBUS_TS, PBUS_LISTENER
+EOT
+}
+
+# --------------------------------------------------------- interactive ---
+
+# Splits a line into arguments, honouring " and ', and evaluating nothing:
+# the REPL must not grant more power than the CLI.
+split_line() {
+	local s="$1"
+	local -n _out="$2"
+	local i c cur="" started=0 quote=""
+	_out=()
+	for (( i = 0; i < ${#s}; i++ )); do
+		c="${s:i:1}"
+		if [[ -n $quote ]]; then
+			if [[ $c == "$quote" ]]; then quote=""; else cur+="$c"; fi
+			continue
+		fi
+		case "$c" in
+			\'|\")  quote="$c"; started=1 ;;
+			' '|$'\t')
+				if (( started )); then _out+=("$cur"); cur=""; started=0; fi
+				;;
+			\\)
+				(( i++ )); cur+="${s:i:1}"; started=1
+				;;
+			*) cur+="$c"; started=1 ;;
+		esac
+	done
+	[[ -n $quote ]] && return 1
+	(( started )) && _out+=("$cur")
+	return 0
+}
+
+cmd_shell() {
+	local line
+	local -a args
+	printf 'pbus %s - type "help" for the command list, "quit" to leave.\n' "$PBUS_VERSION"
+	local histfile="${XDG_STATE_HOME:-$HOME/.local/state}/pbus_history"
+	mkdir -p "${histfile%/*}" 2>/dev/null
+	set -o history 2>/dev/null
+	history -r "$histfile" 2>/dev/null
+	while :; do
+		if ! read -r -e -p "pbus> " line; then echo; break; fi
+		[[ -z ${line// /} ]] && continue
+		history -s "$line" 2>/dev/null
+		case "$line" in
+			quit|exit|q) break ;;
+		esac
+		args=()
+		if ! split_line "$line" args; then
+			printf 'unterminated quote\n' >&2
+			continue
+		fi
+		(( ${#args[@]} )) || continue
+		dispatch "${args[@]}"
+	done
+	history -w "$histfile" 2>/dev/null
+	return 0
+}
+
+# ------------------------------------------------------------ dispatch ---
+
+dispatch() {
+	local cmd="${1:-}"; shift || true
+	case "$cmd" in
+		list-events|events|ls-events)        cmd_list_events "$@" ;;
+		show-event)                          cmd_show_event "$@" ;;
+		register-event|add-event)            cmd_register_event "$@" ;;
+		unregister-event|del-event|rm-event) cmd_unregister_event "$@" ;;
+		rotate-key)                          cmd_rotate_key "$@" ;;
+		save-key)                            cmd_save_key "$@" ;;
+		register-listener|add-listener)      cmd_register_listener "$@" ;;
+		list-listeners|listeners)            cmd_list_listeners "$@" ;;
+		show-listener)                       cmd_show_listener "$@" ;;
+		unregister-listener|del-listener|rm-listener) cmd_unregister_listener "$@" ;;
+		enable)                              cmd_set_enabled "${1:-}" 1 ;;
+		disable)                             cmd_set_enabled "${1:-}" 0 ;;
+		emit|send|trigger)                   cmd_emit "$@" ;;
+		test|dry-run)                        cmd_test "$@" ;;
+		status)                              cmd_status "$@" ;;
+		log|logs)                            cmd_log "$@" ;;
+		reload)                              cmd_reload "$@" ;;
+		shell|interactive)                   cmd_shell ;;
+		help|-h|--help)                      cmd_help ;;
+		version|-V|--version)                printf 'pbus %s\n' "$PBUS_VERSION" ;;
+		*) printf 'pbus: unknown command: %s (see "pbus help")\n' "$cmd" >&2; return 2 ;;
+	esac
+}
+
+if (( $# == 0 )); then
+	if [[ -t 0 ]]; then cmd_shell; else cmd_help; fi
+	exit 0
+fi
+dispatch "$@"

@@ -1,0 +1,147 @@
+.TH PBUS 1 "2026-10-25" "pbus 0.1.0" "User Commands"
+.SH NAME
+pbus \- declare, subscribe to and emit system events
+.SH SYNOPSIS
+.B pbus
+.RI [ command ]
+.RI [ options ]
+.RI [ arguments ]
+.br
+.B pbus
+.SH DESCRIPTION
+.B pbus
+drives the
+.BR pbusd (8)
+event dispatcher. An event is a name; a listener is a command run when that
+event is emitted. Listeners keep no process waiting on anything: the daemon
+starts them itself, asynchronously.
+.PP
+With no argument, on a terminal,
+.B pbus
+opens an interactive session accepting the same commands.
+.SH COMMANDS
+.SS Events
+.TP
+.B list-events
+List events, how many listeners each has, and whether they require a key.
+.TP
+.BI "show-event " name
+Detail one event.
+.TP
+.BI "register-event " name " [\-d " description "] [\-\-no\-key] [\-s] [\-f]"
+Declare an event and print, once only, the key emitters must present. With
+.BR \-\-no\-key ,
+the event is open to any local emission. With
+.BR \-s ,
+the key is kept in the user's keyring.
+.TP
+.BI "unregister-event " name " [\-\-purge\-listeners]"
+Remove an event, its secret, and optionally its listeners.
+.TP
+.BI "rotate-key " name " [\-s]"
+Replace the key. The previous one stops being valid at once.
+.TP
+.BI "save-key " name " [\-k " key ]
+Put a key in the keyring. Without
+.BR \-k ,
+the key is prompted for without echo.
+.SS Listeners
+.TP
+.BI "register-listener " event " [options] " command ...
+Register a command to run. The event may be a glob pattern, such as
+.BR release.* .
+If a single command argument is given it is kept verbatim and interpreted by
+the shell, which allows
+.BR "cmd1 && cmd2" .
+If several arguments are given, each one is quoted.
+Options:
+.BR \-\-id ,
+.BR \-u / \-\-user ,
+.BR \-w / \-\-workdir ,
+.BR \-t / \-\-timeout ,
+.BR \-d / \-\-description ,
+.BR \-\-disabled .
+.TP
+.BI "list-listeners [" event ]
+List listeners.
+.TP
+.BI "show-listener " id
+Print a listener's file.
+.TP
+.BI "unregister-listener " id
+Remove a listener.
+.TP
+.BI "enable " id " | disable " id
+Enable or suspend a listener without removing it.
+.SS Emission
+.TP
+.BI "emit " event " [options]"
+Emit an event. The payload comes from
+.BR \-p / \-\-payload ,
+.BR \-F / \-\-payload\-file
+or
+.BR \-\-stdin .
+The key comes from
+.BR \-k / \-\-key ,
+.BR \-K / \-\-key\-file ,
+the
+.B PBUS_KEY
+variable, or the keyring.
+.B emit
+waits for the daemon's verdict and exits 0 when the event was accepted, 1 on a
+local error, 3 when the key was refused, 4 when the event is unknown, and 5
+when no acknowledgement arrived within
+.BR \-\-ack\-timeout
+(5 seconds by default).
+.B \-\-no\-wait
+skips the wait entirely. The verdict is sent before the listeners start, so
+this never waits for the triggered commands themselves.
+.TP
+.BI "test " event
+Show what would run, without running it.
+.SS Misc
+.TP
+.BR status ", " "log [\-n " N "] [\-f]" ", " reload ", " shell ", " help ", " version
+.SH ENVIRONMENT OF A TRIGGERED COMMAND
+.TP
+.B PBUS_EVENT
+Real name of the event emitted.
+.TP
+.B PBUS_PAYLOAD
+Payload, also fed to the command's standard input.
+.TP
+.B PBUS_EVENT_ID
+Unique id of the emission, repeated in the log.
+.TP
+.B PBUS_TS
+Timestamp of the emission.
+.TP
+.B PBUS_LISTENER
+Identifier of the listener.
+.SH FILES
+.TP
+.I /etc/pbus/pbus.conf
+Daemon configuration.
+.TP
+.I /etc/pbus/events.d/<name>.event
+One event's declaration.
+.TP
+.I /etc/pbus/listeners.d/<id>.listener
+One listener's declaration. Any edit applies to the next event.
+.TP
+.I /var/lib/pbus/auth/<name>.auth
+Salt and hash of the key, readable by root only.
+.TP
+.I ~/.config/pbus/keys/<name>
+The user's keyring;
+.I /etc/pbus/keys/<name>
+for root.
+.SH KEY LOOKUP ORDER
+.BR \-\-key ,
+then
+.BR \-\-key\-file ,
+then
+.BR $PBUS_KEY ,
+then the keyring.
+.SH SEE ALSO
+.BR pbusd (8)

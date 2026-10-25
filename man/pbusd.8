@@ -1,0 +1,91 @@
+.TH PBUSD 8 "2026-10-25" "pbus 0.1.0" "System Administration"
+.SH NAME
+pbusd \- pbus event dispatcher daemon
+.SH SYNOPSIS
+.B pbusd
+.RB [ \-\-foreground ]
+.RB [ \-\-log\-level
+.IR level ]
+.SH DESCRIPTION
+.B pbusd
+reads events from the named pipe
+.IR /run/pbus/bus ,
+checks the key presented, then asynchronously launches the commands registered
+in
+.IR /etc/pbus/listeners.d .
+It is normally started at boot by the
+.B pbus.service
+unit.
+.PP
+Event and listener declarations are re-read on every incoming event, so an
+edit made by hand applies immediately.
+.B SIGHUP
+re-reads
+.I /etc/pbus/pbus.conf
+only.
+.SH PROTOCOL
+An emission is a single line, fields separated by tabs:
+.PP
+.RS
+PBUS2 <event> <key> <nonce> <timestamp> <reply wanted> <base64 payload>
+.RE
+.PP
+Writes under 4096 bytes to a pipe are atomic, which makes concurrent emissions
+safe. Beyond that, the emitter drops the payload into
+.I /run/pbus/spool
+and sends only the
+.B @spool
+marker.
+.PP
+When the sixth field is 1, the daemon drops its verdict into
+.IR /run/pbus/reply/<nonce> ,
+written under a temporary name and renamed, so the emitter never reads half a
+status. The verdict is written before the listeners are launched. Stale
+replies are swept after five minutes, as abandoned spool files are after an
+hour.
+.SH SECURITY
+The pipe is created mode
+.BR 0622 :
+any user may emit, nobody but the daemon may read the traffic. The key
+therefore travels in the clear through a channel only the daemon reads; on
+disk, only a salted SHA\-256 hash is kept, mode
+.BR 0600 .
+Comparison is constant-time.
+.PP
+Triggered commands run as root unless the listener sets
+.IR user ,
+in which case the daemon drops privileges with
+.BR setpriv (1).
+A listener is therefore as dangerous as a line in root's crontab: grant write
+access to
+.I /etc/pbus/listeners.d
+to administrators only.
+.SH CONFIGURATION
+.TP
+.B log_level
+debug, info, warn or error.
+.TP
+.B log_file
+Path of the log.
+.TP
+.B max_jobs
+Maximum number of concurrent commands; beyond it, the daemon waits.
+.TP
+.B default_timeout
+Default maximum run time of a command, in seconds.
+.SH FILES
+.I /run/pbus/bus
+,
+.I /run/pbus/spool
+,
+.I /run/pbus/reply
+,
+.I /run/pbus/pbusd.pid
+,
+.I /run/pbus/stats
+,
+.I /var/log/pbus/pbus.log
+.SH SEE ALSO
+.BR pbus (1),
+.BR setpriv (1),
+.BR systemd.service (5)
