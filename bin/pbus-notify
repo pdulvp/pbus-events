@@ -1,0 +1,99 @@
+#!/bin/sh
+# pbus-notify - send a desktop notification, typically from a pbus listener.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 pdulvp <pdulvp@laposte.net>
+#
+# A notification is a D-Bus message to a daemon running inside a user's
+# graphical session. pbusd runs as root, outside any session, and hands its
+# listeners a scrubbed environment, so the session bus has to be named
+# explicitly and reached with the right credentials.
+
+set -eu
+
+PROG="pbus-notify"
+user=""
+icon="dialog-information"
+expire="8000"
+urgency="normal"
+
+usage() {
+	cat <<'EOT'
+Usage: pbus-notify [options] <summary> [body]
+
+  -u, --user USER       whose desktop to notify (default: $USER, which pbusd
+                        sets to the listener's user= value)
+  -i, --icon NAME       icon name (default dialog-information)
+  -t, --timeout MS      how long the popup stays (default 8000)
+  -U, --urgency LEVEL   low | normal | critical
+  -h, --help            this help
+
+Exit status: 0 sent, 1 unknown user, 2 usage, 3 no session bus for that user,
+4 no notification tool installed, 5 only root can notify another user.
+EOT
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-u|--user)    user="${2:-}"; shift 2 ;;
+		-i|--icon)    icon="${2:-}"; shift 2 ;;
+		-t|--timeout) expire="${2:-}"; shift 2 ;;
+		-U|--urgency) urgency="${2:-}"; shift 2 ;;
+		-h|--help)    usage; exit 0 ;;
+		--)           shift; break ;;
+		-*)           echo "$PROG: unknown option: $1" >&2; usage >&2; exit 2 ;;
+		*)            break ;;
+	esac
+done
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+summary="$1"
+body="${2:-}"
+
+case "$urgency" in
+	low)      urgency_byte=0 ;;
+	normal)   urgency_byte=1 ;;
+	critical) urgency_byte=2 ;;
+	*) echo "$PROG: urgency must be low, normal or critical" >&2; exit 2 ;;
+esac
+
+[ -n "$user" ] || user="${USER:-$(id -un)}"
+uid=$(id -u "$user" 2>/dev/null) || { echo "$PROG: unknown user: $user" >&2; exit 1; }
+gid=$(id -g "$user")
+
+me=$(id -u)
+if [ "$me" != "$uid" ] && [ "$me" != 0 ]; then
+	echo "$PROG: only root can notify another user (you are $(id -un), target is $user)" >&2
+	exit 5
+fi
+
+# The session bus always lives here; dbus-daemon authenticates the peer by
+# its credentials and refuses a uid that does not own the bus, so the socket
+# being world-writable is not enough.
+runtime="/run/user/$uid"
+if [ ! -S "$runtime/bus" ]; then
+	echo "$PROG: no session bus at $runtime/bus; is $user logged in to a desktop?" >&2
+	exit 3
+fi
+
+if command -v notify-send >/dev/null 2>&1; then
+	set -- notify-send -a pbus -i "$icon" -u "$urgency" -t "$expire" -- "$summary" "$body"
+elif command -v gdbus >/dev/null 2>&1; then
+	set -- gdbus call --session \
+		--dest org.freedesktop.Notifications \
+		--object-path /org/freedesktop/Notifications \
+		--method org.freedesktop.Notifications.Notify \
+		pbus 0 "$icon" "$summary" "$body" "[]" \
+		"{'urgency': <byte $urgency_byte>}" "$expire"
+else
+	echo "$PROG: neither notify-send nor gdbus is installed (apt install libglib2.0-bin)" >&2
+	exit 4
+fi
+
+# gdbus prints the notification id; keep it out of the pbus log.
+if [ "$me" = 0 ] && [ "$uid" != 0 ]; then
+	exec setpriv --reuid "$uid" --regid "$gid" --init-groups -- \
+		env "XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+		"$@" >/dev/null
+fi
+exec env "XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+	"$@" >/dev/null

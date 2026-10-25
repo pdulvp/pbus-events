@@ -74,6 +74,8 @@ if command -v make >/dev/null; then
 		[[ $(PBUS_LIB="$STAGE/usr/lib/pbus" "$STAGE/usr/bin/pbus" version) == "pbus $VERSION_FILE" ]]'
 	check "the installed man page carries the version" '
 		zcat "$STAGE/usr/share/man/man1/pbus.1.gz" | head -1 | grep -q "pbus $VERSION_FILE"'
+	check "the installed tree ships pbus-notify" '[[ -x "$STAGE/usr/bin/pbus-notify" ]]'
+	check "the installed tree ships its man page" '[[ -f "$STAGE/usr/share/man/man1/pbus-notify.1.gz" ]]'
 	check "the installed tree ships the MIT licence" '
 		grep -q "MIT License" "$STAGE/usr/share/doc/pbus/LICENSE"'
 	check "the Debian copyright file is DEP-5 with the MIT text" '
@@ -89,6 +91,24 @@ if command -v make >/dev/null; then
 		     <(tail -n "$(wc -l < "$ROOT/LICENSE")" "$STAGE/usr/share/doc/pbus/copyright") >/dev/null'
 	check "the installed changelog carries the version" '
 		zcat "$STAGE/usr/share/doc/pbus/changelog.Debian.gz" | head -1 | grep -q "pbus ($VERSION_FILE)"'
+fi
+
+# --------------------------------------------------------- pbus-notify ---
+NOTIFY="$ROOT/bin/pbus-notify"
+check "pbus-notify is executable" '[[ -x $NOTIFY ]]'
+check "pbus-notify --help exits 0" '"$NOTIFY" --help >/dev/null'
+check "pbus-notify rejects no argument" '! "$NOTIFY" >/dev/null 2>&1'
+check "pbus-notify exits 1 on an unknown user" '
+	"$NOTIFY" -u nosuchuser x >/dev/null 2>&1; (( $? == 1 ))'
+check "pbus-notify exits 5 for another user when not root" '
+	if (( EUID == 0 )); then true; else
+		"$NOTIFY" -u daemon x >/dev/null 2>&1; (( $? == 5 )); fi'
+check "pbus-notify rejects a bad urgency" '
+	"$NOTIFY" -U shouting x >/dev/null 2>&1; (( $? == 2 ))'
+# Sending for real would pop a window on whoever runs the suite, so it is
+# opt-in: PBUS_TEST_NOTIFY=1 tests/run-tests.sh
+if [[ -n ${PBUS_TEST_NOTIFY:-} && -S /run/user/$(id -u)/bus ]]; then
+	check "pbus-notify reaches the session bus" '"$NOTIFY" "pbus test suite" "this popup is expected"'
 fi
 
 # ------------------------------------------------------------- startup ---
@@ -117,6 +137,16 @@ check "list-events shows the event" '[[ $("$PBUS" list-events) == *release* ]]'
 check "register-listener succeeds" '[[ -f "$PBUS_ETC/listeners.d/site.listener" ]]'
 check "list-listeners shows the listener" '[[ $("$PBUS" list-listeners) == *site* ]]'
 check "test shows what would be triggered" '[[ $("$PBUS" test release) == *site* ]]'
+
+# ------------------------------------------------- identity of a listener ---
+"$PBUS" register-listener release --id whoami /bin/sh -c "id -un > $WORK/out/whoami.txt; echo \$USER >> $WORK/out/whoami.txt" >/dev/null
+"$PBUS" emit release -q
+wait_file "$WORK/out/whoami.txt" 50
+check "a listener without user= runs as the daemon itself" '
+	[[ $(head -1 "$WORK/out/whoami.txt") == "$(id -un)" ]]'
+check "USER matches who the command actually runs as" '
+	[[ $(sed -n 2p "$WORK/out/whoami.txt") == "$(id -un)" ]]'
+"$PBUS" unregister-listener whoami >/dev/null
 
 # ------------------------------------------------------------ emission ---
 "$PBUS" emit release --payload "v1.2.3" -q

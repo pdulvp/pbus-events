@@ -105,7 +105,10 @@ pbusd_exec_listener() {
 	[[ -n $cmd ]] || { pbus_log error "[$lid] no command set"; return 1; }
 	[[ $to =~ ^[0-9]+$ ]] || to="$PBUS_DEFAULT_TIMEOUT"
 
-	local home="/root" shell="/bin/bash" uname="root"
+	# Defaults describe whoever pbusd itself runs as, which is root under the
+	# service unit but not in an unprivileged test instance. Announcing
+	# USER=root while running as somebody else would simply be false.
+	local home="$PBUSD_SELF_HOME" shell="$PBUSD_SELF_SHELL" uname="$PBUSD_SELF_USER"
 	local -a runner=()
 	if [[ -n $user ]]; then
 		if (( EUID != 0 )); then
@@ -312,7 +315,20 @@ pbusd_write_stats() {
 	return 0
 }
 
+# Identity of the daemon itself, resolved once, used for any listener that
+# does not name a user.
+pbusd_resolve_self() {
+	local pwent
+	PBUSD_SELF_USER="root"; PBUSD_SELF_HOME="/root"; PBUSD_SELF_SHELL="/bin/bash"
+	if pwent=$(getent passwd "$EUID"); then
+		IFS=: read -r PBUSD_SELF_USER _ _ _ _ PBUSD_SELF_HOME PBUSD_SELF_SHELL <<<"$pwent"
+	fi
+	[[ -n $PBUSD_SELF_HOME ]] || PBUSD_SELF_HOME="/"
+	[[ -n $PBUSD_SELF_SHELL ]] || PBUSD_SELF_SHELL="/bin/sh"
+}
+
 main() {
+	pbusd_resolve_self
 	pbusd_setup || pbus_die "setup failed"
 	PBUSD_STARTED=$(pbus_timestamp)
 	trap pbusd_on_term TERM INT

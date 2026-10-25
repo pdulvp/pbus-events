@@ -44,7 +44,8 @@ version:
 
 install:
 	install -d -m 0755 $(DESTDIR)$(bindir) $(DESTDIR)$(sbindir) $(DESTDIR)$(libdir)
-	install -m 0755 bin/pbus       $(DESTDIR)$(bindir)/pbus
+	install -m 0755 bin/pbus        $(DESTDIR)$(bindir)/pbus
+	install -m 0755 bin/pbus-notify $(DESTDIR)$(bindir)/pbus-notify
 	install -m 0755 sbin/pbusd     $(DESTDIR)$(sbindir)/pbusd
 	$(call subst_version,lib/pbus/common.sh,$(DESTDIR)$(libdir)/common.sh,0644)
 	install -d -m 0755 $(DESTDIR)$(sysconfdir)/events.d $(DESTDIR)$(sysconfdir)/listeners.d
@@ -58,8 +59,10 @@ install:
 	install -m 0644 completion/pbus $(DESTDIR)$(compdir)/pbus
 	install -d -m 0755 $(DESTDIR)$(mandir)/man1 $(DESTDIR)$(mandir)/man8
 	$(call subst_version,man/pbus.1,$(DESTDIR)$(mandir)/man1/pbus.1,0644)
+	$(call subst_version,man/pbus-notify.1,$(DESTDIR)$(mandir)/man1/pbus-notify.1,0644)
 	$(call subst_version,man/pbusd.8,$(DESTDIR)$(mandir)/man8/pbusd.8,0644)
-	gzip -9nf $(DESTDIR)$(mandir)/man1/pbus.1 $(DESTDIR)$(mandir)/man8/pbusd.8
+	gzip -9nf $(DESTDIR)$(mandir)/man1/pbus.1 $(DESTDIR)$(mandir)/man1/pbus-notify.1 \
+		$(DESTDIR)$(mandir)/man8/pbusd.8
 	install -d -m 0755 $(DESTDIR)$(docdir)
 	install -m 0644 README.md $(DESTDIR)$(docdir)/README.md
 	install -m 0644 examples/prel-release.md $(DESTDIR)$(docdir)/prel-release.md
@@ -77,11 +80,12 @@ install:
 	install -d -m 0700 $(DESTDIR)/var/lib/pbus/auth
 
 uninstall:
-	rm -f $(DESTDIR)$(bindir)/pbus $(DESTDIR)$(sbindir)/pbusd
+	rm -f $(DESTDIR)$(bindir)/pbus $(DESTDIR)$(bindir)/pbus-notify $(DESTDIR)$(sbindir)/pbusd
 	rm -rf $(DESTDIR)$(libdir)
 	rm -f $(DESTDIR)$(unitdir)/pbus.service $(DESTDIR)$(tmpfilesdir)/pbus.conf
 	rm -f $(DESTDIR)$(compdir)/pbus
-	rm -f $(DESTDIR)$(mandir)/man1/pbus.1.gz $(DESTDIR)$(mandir)/man8/pbusd.8.gz
+	rm -f $(DESTDIR)$(mandir)/man1/pbus.1.gz $(DESTDIR)$(mandir)/man1/pbus-notify.1.gz \
+		$(DESTDIR)$(mandir)/man8/pbusd.8.gz
 	rm -rf $(DESTDIR)$(docdir)
 
 $(DEB): install-stage
