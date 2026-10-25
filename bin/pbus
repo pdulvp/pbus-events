@@ -1,5 +1,7 @@
 #!/bin/bash
 # pbus - command line interface to the pbus event dispatcher.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 pdulvp <pdulvp@laposte.net>
 
 set -uo pipefail
 

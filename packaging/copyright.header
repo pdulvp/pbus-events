@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: pbus
+Source: https://github.com/pdulvp/pbus-events
+
+Files: *
+Copyright: 2026 pdulvp <pdulvp@laposte.net>
+License: MIT
+
+License: MIT

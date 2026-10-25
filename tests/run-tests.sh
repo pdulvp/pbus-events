@@ -1,6 +1,8 @@
 #!/bin/bash
 # End-to-end tests for pbus, in a temporary prefix and without privileges.
 # Usage: tests/run-tests.sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 pdulvp <pdulvp@laposte.net>
 
 set -uo pipefail
 
@@ -72,6 +74,19 @@ if command -v make >/dev/null; then
 		[[ $(PBUS_LIB="$STAGE/usr/lib/pbus" "$STAGE/usr/bin/pbus" version) == "pbus $VERSION_FILE" ]]'
 	check "the installed man page carries the version" '
 		zcat "$STAGE/usr/share/man/man1/pbus.1.gz" | head -1 | grep -q "pbus $VERSION_FILE"'
+	check "the installed tree ships the MIT licence" '
+		grep -q "MIT License" "$STAGE/usr/share/doc/pbus/LICENSE"'
+	check "the Debian copyright file is DEP-5 with the MIT text" '
+		grep -q "^License: MIT$" "$STAGE/usr/share/doc/pbus/copyright" &&
+		grep -q "^ Permission is hereby granted" "$STAGE/usr/share/doc/pbus/copyright" &&
+		grep -q "^ \.$" "$STAGE/usr/share/doc/pbus/copyright"'
+	# The licence text is the last thing in the copyright file, so its tail
+	# must be LICENSE itself, indented. This checks the DEP-5 transformation,
+	# not drift: the copyright file is generated from LICENSE at install
+	# time, so there is no second copy that could drift from it.
+	check "copyright is LICENSE indented for DEP-5" '
+		diff <(sed -e "s/^\$/./" -e "s/^/ /" "$ROOT/LICENSE") \
+		     <(tail -n "$(wc -l < "$ROOT/LICENSE")" "$STAGE/usr/share/doc/pbus/copyright") >/dev/null'
 	check "the installed changelog carries the version" '
 		zcat "$STAGE/usr/share/doc/pbus/changelog.Debian.gz" | head -1 | grep -q "pbus ($VERSION_FILE)"'
 fi
