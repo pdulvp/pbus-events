@@ -1,6 +1,8 @@
 #!/bin/bash
 # pbus - shared library, sourced by both the CLI and the daemon.
 # Nothing outside bash, coreutils and util-linux.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 pdulvp <pdulvp@laposte.net>
 
 # Substituted at build time with the contents of VERSION, at the root of the
 # repository, which is also what prel reads. The placeholder is kept here so

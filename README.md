@@ -166,10 +166,17 @@ through a spool in `/run/pbus`.
 updates itself", including passing the key explicitly and running a listener
 as a specific user.
 
+## Licence
+
+MIT — see [LICENSE](LICENSE). The package carries it twice over: as
+`/usr/share/doc/pbus/copyright` in the machine-readable DEP-5 form Debian
+expects, generated from `LICENSE` at build time so the two cannot drift, and
+as a plain copy at `/usr/share/doc/pbus/LICENSE`.
+
 ## Development
 
 ```sh
-tests/run-tests.sh   # 60 end-to-end tests, unprivileged, under /tmp
+tests/run-tests.sh   # 63 end-to-end tests, unprivileged, under /tmp
 make deb             # builds the package with dpkg-deb
 make version         # prints the version
 ```

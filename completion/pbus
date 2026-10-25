@@ -1,4 +1,6 @@
 # Bash completion for pbus.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 pdulvp <pdulvp@laposte.net>
 
 _pbus_events() {
 	local d="${PBUS_ETC:-/etc/pbus}/events.d" f

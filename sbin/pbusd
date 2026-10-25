@@ -1,5 +1,7 @@
 #!/bin/bash
 # pbusd - the pbus event dispatcher daemon.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 pdulvp <pdulvp@laposte.net>
 #
 # Reads lines from the named pipe /run/pbus/bus, checks the event's key, then
 # launches the registered commands asynchronously.

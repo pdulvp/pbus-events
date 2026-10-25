@@ -63,7 +63,13 @@ install:
 	install -d -m 0755 $(DESTDIR)$(docdir)
 	install -m 0644 README.md $(DESTDIR)$(docdir)/README.md
 	install -m 0644 examples/prel-release.md $(DESTDIR)$(docdir)/prel-release.md
-	install -m 0644 packaging/copyright $(DESTDIR)$(docdir)/copyright
+	install -m 0644 LICENSE $(DESTDIR)$(docdir)/LICENSE
+	# The Debian copyright file is the DEP-5 header followed by LICENSE
+	# itself, indented by one space with blank lines written as " .". Built
+	# here rather than kept as a second copy, so the two cannot drift.
+	{ cat packaging/copyright.header; \
+	  sed -e 's/^$$/./' -e 's/^/ /' LICENSE; } > $(DESTDIR)$(docdir)/copyright
+	chmod 0644 $(DESTDIR)$(docdir)/copyright
 	$(call subst_version,packaging/changelog,$(DESTDIR)$(docdir)/changelog.Debian,0644)
 	gzip -9nf $(DESTDIR)$(docdir)/changelog.Debian
 	install -d -m 0755 $(DESTDIR)/var/log/pbus
