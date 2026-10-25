@@ -1,0 +1,353 @@
+#!/bin/bash
+# pbusd - the pbus event dispatcher daemon.
+#
+# Reads lines from the named pipe /run/pbus/bus, checks the event's key, then
+# launches the registered commands asynchronously.
+
+set -uo pipefail
+
+PBUS_LIB="${PBUS_LIB:-/usr/lib/pbus}"
+# shellcheck source=../lib/pbus/common.sh
+source "$PBUS_LIB/common.sh" || { echo "pbusd: library not found" >&2; exit 1; }
+
+pbus_load_conf
+
+PBUSD_RUNNING=1
+PBUSD_EVENTS=0
+PBUSD_JOBS=0
+PBUSD_LAST_SWEEP=0
+
+usage() {
+	cat <<'EOT'
+Usage: pbusd [options]
+
+  -f, --foreground   stay in the foreground (the default, and what systemd expects)
+  -l, --log-level N  debug | info | warn | error
+  -h, --help         this help
+EOT
+}
+
+while (( $# )); do
+	case "$1" in
+		-f|--foreground) shift ;;
+		-l|--log-level) PBUS_LOG_LEVEL="$2"; shift 2 ;;
+		-h|--help) usage; exit 0 ;;
+		-v|--version) echo "pbusd $PBUS_VERSION"; exit 0 ;;
+		*) echo "pbusd: unknown option: $1" >&2; usage >&2; exit 2 ;;
+	esac
+done
+
+# ---------------------------------------------------------------- setup ---
+
+pbusd_setup() {
+	local logdir="${PBUS_LOG%/*}"
+	mkdir -p "$PBUS_EVENTS_DIR" "$PBUS_LISTENERS_DIR" "$PBUS_AUTH_DIR" "$PBUS_RUN" "$logdir" || return 1
+	chmod 0700 "$PBUS_AUTH_DIR" 2>/dev/null || true
+
+	# The spool holds payloads too large for one atomic write. Mode 1733: all
+	# may write, none may list, and the sticky bit stops anyone removing a
+	# file that is not theirs.
+	mkdir -p "$PBUS_SPOOL" || return 1
+	chmod 1733 "$PBUS_SPOOL" 2>/dev/null || true
+
+	# Acknowledgements are dropped here, one file per emission, named after
+	# the nonce. Same mode as the spool: an emitter reaches its own reply by
+	# name without being able to list anyone else's.
+	mkdir -p "$PBUS_REPLY" || return 1
+	chmod 1733 "$PBUS_REPLY" 2>/dev/null || true
+
+	# The pidfile is written before the pipe: the pipe's existence is the
+	# readiness signal, so everything else must already be in place.
+	printf '%s\n' "$$" >"$PBUS_PIDFILE" || return 1
+
+	if [[ -e $PBUS_FIFO && ! -p $PBUS_FIFO ]]; then
+		pbus_log error "$PBUS_FIFO exists and is not a named pipe"
+		return 1
+	fi
+	[[ -p $PBUS_FIFO ]] || mkfifo -m 0622 "$PBUS_FIFO" || return 1
+	# 0622: any user may emit, only the daemon may read the traffic.
+	chmod 0622 "$PBUS_FIFO" 2>/dev/null || true
+	return 0
+}
+
+pbusd_cleanup() {
+	rm -f "$PBUS_PIDFILE"
+}
+
+pbusd_on_term() { PBUSD_RUNNING=0; }
+pbusd_on_hup()  { pbus_load_conf; pbus_log info "configuration reloaded (SIGHUP)"; }
+
+# ------------------------------------------------------------ execution ---
+
+# Prefixes each line a listener writes and sends it to the log.
+pbusd_prefix_log() {
+	local tag="$1" line
+	while IFS= read -r line; do
+		pbus_log info "[$tag] $line"
+	done
+	[[ -n ${line:-} ]] && pbus_log info "[$tag] $line"
+	return 0
+}
+
+# pbusd_exec_listener <id> <event> <event id> <timestamp> <payload>
+# Already running inside a background subshell.
+pbusd_exec_listener() {
+	local lid="$1" event="$2" eid="$3" ts="$4" payload="$5"
+	local -A L=()
+	pbus_kv_load "$(pbus_listener_file "$lid")" L || return 1
+
+	local cmd="${L[command]:-}"
+	local user="${L[user]:-}"
+	local wd="${L[workdir]:-/}"
+	local to="${L[timeout]:-$PBUS_DEFAULT_TIMEOUT}"
+	[[ -n $cmd ]] || { pbus_log error "[$lid] no command set"; return 1; }
+	[[ $to =~ ^[0-9]+$ ]] || to="$PBUS_DEFAULT_TIMEOUT"
+
+	local home="/root" shell="/bin/bash" uname="root"
+	local -a runner=()
+	if [[ -n $user ]]; then
+		if (( EUID != 0 )); then
+			pbus_log warn "[$lid] ignoring user=$user: pbusd is not running as root"
+		else
+			local uid gid pwent
+			pwent=$(getent passwd "$user") || { pbus_log error "[$lid] unknown user: $user"; return 1; }
+			IFS=: read -r uname _ uid gid _ home shell <<<"$pwent"
+			[[ -n $shell ]] || shell="/bin/sh"
+			runner=(setpriv --reuid "$uid" --regid "$gid" --init-groups --)
+		fi
+	fi
+
+	[[ -d $wd ]] || { pbus_log error "[$lid] working directory is missing: $wd"; return 1; }
+
+	local -a envv=(
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		"HOME=$home" "USER=$uname" "LOGNAME=$uname" "SHELL=$shell"
+		"PBUS_EVENT=$event" "PBUS_EVENT_ID=$eid" "PBUS_TS=$ts"
+		"PBUS_LISTENER=$lid" "PBUS_PAYLOAD=$payload"
+	)
+
+	local start=$SECONDS rc
+	pbus_log info "[$lid] starting (event=$event id=$eid)"
+	# The payload is handed over twice, through PBUS_PAYLOAD and on standard
+	# input, which sidesteps the size limit of the environment.
+	printf '%s' "$payload" \
+		| ( cd "$wd" && exec setsid "${runner[@]}" env "${envv[@]}" \
+			timeout -k 5 "$to" /bin/bash -c "$cmd" ) 2>&1 \
+		| pbusd_prefix_log "$lid"
+	rc=${PIPESTATUS[1]}
+	if (( rc == 0 )); then
+		pbus_log info "[$lid] finished in $(( SECONDS - start ))s (status 0)"
+	elif (( rc == 124 )); then
+		pbus_log warn "[$lid] killed after the ${to}s timeout"
+	else
+		pbus_log warn "[$lid] finished in $(( SECONDS - start ))s (status $rc)"
+	fi
+	return 0
+}
+
+# Waits for a slot under the concurrency limit.
+pbusd_throttle() {
+	local n
+	while :; do
+		n=$(jobs -pr | wc -l)
+		(( n < PBUS_MAX_JOBS )) && break
+		wait -n 2>/dev/null || break
+	done
+}
+
+# ----------------------------------------------------------------- auth ---
+
+# pbusd_auth_ok <event> <key as supplied>
+#
+# The emitter sends the key in the clear: the pipe is write-only to everyone
+# else (0622), so the daemon is the only reader. The salt and the hash stay on
+# the daemon's side, which protects the secret at rest even if /var/lib/pbus
+# were read.
+pbusd_auth_ok() {
+	local event="$1" given="$2"
+	local -A E=()
+	pbus_kv_load "$(pbus_event_file "$event")" E || return 1
+	local mode="${E[auth]:-key}"
+	if [[ $mode == none ]]; then
+		return 0
+	fi
+	local -A A=()
+	pbus_kv_load "$(pbus_auth_file "$event")" A || {
+		pbus_log error "event $event: auth file is unreadable"
+		return 1
+	}
+	local expected="${A[hash]:-}" salt="${A[salt]:-}"
+	[[ -n $expected && -n $salt ]] || return 1
+	[[ -n $given && $given != "-" ]] || return 1
+	pbus_equal_ct "$expected" "$(pbus_hash "$salt" "$given")"
+}
+
+# ------------------------------------------------------------ acknowledge --
+
+# pbusd_reply <want> <nonce> <status> [detail]
+#
+# Emitters that asked for it get the verdict back through a small file, so
+# "pbus emit" can exit non-zero when a key is refused. Written to a temporary
+# name then renamed, so a reader never sees half a status.
+pbusd_reply() {
+	local want="$1" nonce="$2" status="$3" detail="${4:-}"
+	[[ $want == 1 ]] || return 0
+	local tmp="$PBUS_REPLY/.$nonce.tmp" final="$PBUS_REPLY/$nonce"
+	printf '%s %s\n' "$status" "$detail" >"$tmp" 2>/dev/null || return 0
+	chmod 0644 "$tmp" 2>/dev/null
+	mv -f "$tmp" "$final" 2>/dev/null
+	return 0
+}
+
+# -------------------------------------------------------------- read loop --
+
+pbusd_select_listeners() {
+	local event="$1" lid pat
+	local -A L
+	while read -r lid; do
+		[[ -n $lid ]] || continue
+		L=()
+		pbus_kv_load "$(pbus_listener_file "$lid")" L || continue
+		[[ ${L[enabled]:-1} == 0 || ${L[enabled]:-1} == no || ${L[enabled]:-1} == false ]] && continue
+		pat="${L[event]:-}"
+		[[ -n $pat ]] || continue
+		# shellcheck disable=SC2053 — the glob match is deliberate.
+		if [[ $event == $pat ]]; then
+			printf '%s\n' "$lid"
+		fi
+	done < <(pbus_list_listener_ids)
+}
+
+pbusd_handle() {
+	local event="$1" auth="$2" nonce="$3" ts="$4" want="$5" enc="$6"
+	local eid="$nonce"
+
+	if ! pbus_valid_name "$event"; then
+		pbus_log warn "event name is invalid, ignored"
+		return 0
+	fi
+	# The nonce doubles as a filename in the spool, so it must be strictly
+	# hexadecimal: otherwise an emitter could make the daemon, which runs as
+	# root, read and then delete an arbitrary file.
+	if [[ ! $nonce =~ ^[0-9a-f]{8,32}$ ]]; then
+		pbus_log warn "invalid emission id for event $event, ignored"
+		return 0
+	fi
+	if ! pbus_event_exists "$event"; then
+		pbus_log warn "unknown event received: $event"
+		pbusd_reply "$want" "$nonce" denied unknown-event
+		return 0
+	fi
+	if ! pbusd_auth_ok "$event" "$auth"; then
+		pbus_log warn "authentication refused for event $event (id=$eid)"
+		pbusd_reply "$want" "$nonce" denied bad-key
+		return 0
+	fi
+
+	local payload=""
+	if [[ $enc == "@spool" ]]; then
+		local sf="$PBUS_SPOOL/$nonce"
+		if [[ -f $sf && ! -L $sf ]]; then
+			payload=$(cat "$sf")
+			rm -f "$sf"
+		else
+			pbus_log warn "payload missing from the spool for id $eid"
+		fi
+	elif [[ -n $enc && $enc != "-" ]]; then
+		payload=$(printf '%s' "$enc" | base64 -d 2>/dev/null) || payload=""
+	fi
+
+	(( PBUSD_EVENTS++ ))
+	local -a targets=()
+	mapfile -t targets < <(pbusd_select_listeners "$event")
+	pbus_log info "event $event received (id=$eid, ${#targets[@]} listener(s))"
+
+	# Acknowledged before the jobs are launched: the emitter learns the
+	# verdict at once and never waits for the work itself.
+	pbusd_reply "$want" "$nonce" accepted "${#targets[@]}"
+
+	local lid
+	for lid in "${targets[@]}"; do
+		pbusd_throttle
+		(( PBUSD_JOBS++ ))
+		pbusd_exec_listener "$lid" "$event" "$eid" "$ts" "$payload" &
+	done
+	pbusd_write_stats
+	pbusd_sweep_spool
+	return 0
+}
+
+# The spool and the reply directory are writable by everyone: a payload
+# dropped with no matching emission, or an acknowledgement its emitter never
+# collected, would otherwise stay forever.
+pbusd_sweep_spool() {
+	local now f age
+	printf -v now '%(%s)T' -1
+	(( now - PBUSD_LAST_SWEEP < 300 )) && return 0
+	PBUSD_LAST_SWEEP=$now
+	shopt -s nullglob
+	for f in "$PBUS_SPOOL"/*; do
+		age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))
+		if (( age > 3600 )); then
+			rm -f "$f" && pbus_log warn "removed abandoned spool file: ${f##*/}"
+		fi
+	done
+	for f in "$PBUS_REPLY"/*; do
+		age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))
+		(( age > 300 )) && rm -f "$f"
+	done
+	shopt -u nullglob
+	return 0
+}
+
+pbusd_write_stats() {
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'started=%s\n' "$PBUSD_STARTED"
+		printf 'events=%s\n' "$PBUSD_EVENTS"
+		printf 'jobs=%s\n' "$PBUSD_JOBS"
+	} >"$PBUS_RUN/stats.tmp" 2>/dev/null && mv -f "$PBUS_RUN/stats.tmp" "$PBUS_RUN/stats" 2>/dev/null
+	return 0
+}
+
+main() {
+	pbusd_setup || pbus_die "setup failed"
+	PBUSD_STARTED=$(pbus_timestamp)
+	trap pbusd_on_term TERM INT
+	trap pbusd_on_hup HUP
+	trap pbusd_cleanup EXIT
+
+	pbus_log info "pbusd $PBUS_VERSION started (pid $$, pipe $PBUS_FIFO)"
+	pbusd_write_stats
+
+	# Opened read-write: the daemon holds a writing end of its own, so the
+	# read never hits end-of-file when the last emitter disconnects.
+	exec 3<>"$PBUS_FIFO" || pbus_die "cannot open the pipe"
+
+	local magic event auth nonce ts want enc rc
+	while (( PBUSD_RUNNING )); do
+		# Read with a timeout: bash does not always run a signal handler while
+		# blocked reading from a pipe, and the daemon must be able to stop
+		# without waiting for the next event. One wake-up per second is free.
+		IFS=$'\t' read -r -t 1 -u 3 magic event auth nonce ts want enc
+		rc=$?
+		if (( rc != 0 )); then
+			(( rc > 128 )) && continue          # timed out, or a signal arrived
+			(( PBUSD_RUNNING )) || break
+			pbus_log error "cannot read the pipe (status $rc)"
+			break
+		fi
+		[[ -z $magic ]] && continue
+		if [[ $magic != "$PBUS_PROTO" ]]; then
+			pbus_log warn "ignoring message with unknown protocol: $magic"
+			continue
+		fi
+		pbusd_handle "$event" "$auth" "$nonce" "$ts" "$want" "$enc"
+	done
+
+	pbus_log info "stop requested, waiting for running jobs"
+	wait
+	pbus_log info "pbusd stopped"
+}
+
+main "$@"

@@ -1,0 +1,69 @@
+# Bash completion for pbus.
+
+_pbus_events() {
+	local d="${PBUS_ETC:-/etc/pbus}/events.d" f
+	for f in "$d"/*.event; do
+		[ -e "$f" ] || continue
+		f=${f##*/}
+		printf '%s\n' "${f%.event}"
+	done
+}
+
+_pbus_listeners() {
+	local d="${PBUS_ETC:-/etc/pbus}/listeners.d" f
+	for f in "$d"/*.listener; do
+		[ -e "$f" ] || continue
+		f=${f##*/}
+		printf '%s\n' "${f%.listener}"
+	done
+}
+
+_pbus() {
+	local cur prev cmd
+	COMPREPLY=()
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+	cmd="${COMP_WORDS[1]:-}"
+
+	local commands="list-events show-event register-event unregister-event
+		rotate-key save-key register-listener list-listeners show-listener
+		unregister-listener enable disable emit test status log reload shell
+		help version"
+
+	if (( COMP_CWORD == 1 )); then
+		mapfile -t COMPREPLY < <(compgen -W "$commands" -- "$cur")
+		return
+	fi
+
+	case "$prev" in
+		-u|--user)
+			mapfile -t COMPREPLY < <(compgen -u -- "$cur"); return ;;
+		-w|--workdir)
+			mapfile -t COMPREPLY < <(compgen -d -- "$cur"); return ;;
+		-F|--payload-file|-K|--key-file)
+			mapfile -t COMPREPLY < <(compgen -f -- "$cur"); return ;;
+	esac
+
+	case "$cmd" in
+		show-event|unregister-event|rotate-key|save-key|emit|test|list-listeners|register-listener)
+			if (( COMP_CWORD == 2 )); then
+				mapfile -t COMPREPLY < <(compgen -W "$(_pbus_events)" -- "$cur")
+				return
+			fi ;;
+		show-listener|unregister-listener|enable|disable)
+			if (( COMP_CWORD == 2 )); then
+				mapfile -t COMPREPLY < <(compgen -W "$(_pbus_listeners)" -- "$cur")
+				return
+			fi ;;
+	esac
+
+	case "$cmd" in
+		register-event)    mapfile -t COMPREPLY < <(compgen -W "-d --description --no-key -s --save -f --force" -- "$cur") ;;
+		register-listener) mapfile -t COMPREPLY < <(compgen -W "--id -u --user -w --workdir -t --timeout -d --description --disabled" -- "$cur") ;;
+		emit)              mapfile -t COMPREPLY < <(compgen -W "-p --payload -F --payload-file --stdin -k --key -K --key-file -q --quiet" -- "$cur") ;;
+		log)               mapfile -t COMPREPLY < <(compgen -W "-n -f --follow" -- "$cur") ;;
+		unregister-event)  mapfile -t COMPREPLY < <(compgen -W "--purge-listeners" -- "$cur") ;;
+	esac
+}
+
+complete -F _pbus pbus

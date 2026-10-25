@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+	configure)
+		install -d -m 0755 /etc/pbus/events.d /etc/pbus/listeners.d
+		install -d -m 0700 /etc/pbus/keys
+		install -d -m 0755 /var/log/pbus
+		install -d -m 0750 /var/lib/pbus
+		install -d -m 0700 /var/lib/pbus/auth
+
+		if [ -x /usr/bin/systemd-tmpfiles ]; then
+			systemd-tmpfiles --create /usr/lib/tmpfiles.d/pbus.conf || true
+		fi
+
+		if [ -d /run/systemd/system ]; then
+			systemctl daemon-reload || true
+			if [ -z "$2" ]; then
+				# First install: enable the service at boot.
+				systemctl enable pbus.service || true
+			fi
+			systemctl restart pbus.service || true
+		fi
+		;;
+	abort-upgrade|abort-remove|abort-deconfigure)
+		;;
+esac
+
+exit 0

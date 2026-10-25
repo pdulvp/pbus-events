@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+	remove|deconfigure)
+		if [ -d /run/systemd/system ]; then
+			systemctl stop pbus.service || true
+		fi
+		;;
+	upgrade|failed-upgrade)
+		;;
+esac
+
+exit 0

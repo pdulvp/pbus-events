@@ -1,0 +1,21 @@
+Package: pbus
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: @ARCH@
+Depends: bash (>= 5.0), coreutils (>= 8.30), util-linux, sed, grep, init-system-helpers (>= 1.51)
+Maintainer: pdulvp <pdulvp@laposte.net>
+Installed-Size: @SIZE@
+Description: system event dispatcher, an event-driven cron
+ pbus runs scripts or commands when a named event is emitted. Listeners keep
+ no process waiting on anything: the pbusd daemon starts them, asynchronously,
+ much like a cron triggered by an event rather than by the clock.
+ .
+ Events and listeners are declared either through configuration files under
+ /etc/pbus, or through the pbus command, which works line by line as well as
+ in an interactive session.
+ .
+ Each event gets a key when it is created, and emitters must present it; only
+ a salted hash of that key is kept on disk.
+ .
+ The package uses nothing beyond bash, coreutils and util-linux.
