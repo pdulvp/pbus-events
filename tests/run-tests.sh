@@ -54,6 +54,28 @@ max_jobs=4
 default_timeout=30
 EOT
 
+# ------------------------------------------------------------- version ---
+VERSION_FILE=$(cat "$ROOT/VERSION")
+check "VERSION exists and is not empty" '[[ -n $VERSION_FILE ]]'
+check "pbus reports the version from VERSION" '[[ $("$PBUS" version) == "pbus $VERSION_FILE" ]]'
+check "pbusd reports the same version" '[[ $("$PBUSD" --version) == "pbusd $VERSION_FILE" ]]'
+check "no placeholder leaks into the output" '[[ $("$PBUS" version) != *@VERSION@* ]]'
+
+# The source tree reads VERSION through the unsubstituted placeholder, while
+# an installed tree reads what make wrote into it. Only staging a real install
+# exercises the second path, where a careless substitution once turned the
+# fallback on and reported "dev".
+if command -v make >/dev/null; then
+	STAGE="$WORK/stage"
+	make -C "$ROOT" install DESTDIR="$STAGE" >/dev/null 2>&1
+	check "an installed tree reports the same version" '
+		[[ $(PBUS_LIB="$STAGE/usr/lib/pbus" "$STAGE/usr/bin/pbus" version) == "pbus $VERSION_FILE" ]]'
+	check "the installed man page carries the version" '
+		zcat "$STAGE/usr/share/man/man1/pbus.1.gz" | head -1 | grep -q "pbus $VERSION_FILE"'
+	check "the installed changelog carries the version" '
+		zcat "$STAGE/usr/share/doc/pbus/changelog.Debian.gz" | head -1 | grep -q "pbus ($VERSION_FILE)"'
+fi
+
 # ------------------------------------------------------------- startup ---
 "$PBUSD" --foreground &
 DAEMON_PID=$!
