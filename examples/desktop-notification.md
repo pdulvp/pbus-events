@@ -2,7 +2,7 @@
 
 ```sh
 sudo pbus register-event release.published -d "A release was published" --save
-sudo pbus register-listener release.published --id popup \
+sudo pbus register-listener release.published --id popup -u root \
      'pbus-notify -u alice "Release $PBUS_PAYLOAD published" "update_site started"'
 sudo pbus emit release.published --payload v1.2.3
 ```

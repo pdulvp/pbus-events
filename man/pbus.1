@@ -47,9 +47,13 @@ Put a key in the keyring. Without
 the key is prompted for without echo.
 .SS Listeners
 .TP
-.BI "register-listener " event " [options] " command ...
+.BI "register-listener " event " \-u " user " [options] " command ...
 Register a command to run. The event may be a glob pattern, such as
 .BR release.* .
+.B \-u
+is required: the account the command runs as is never implied, and
+.B \-u root
+is how root is asked for.
 If a single command argument is given it is kept verbatim and interpreted by
 the shell, which allows
 .BR "cmd1 && cmd2" .

@@ -15,9 +15,16 @@ sudo pbus register-listener release.published --id update-site \
      -u www-data -w /srv/site -t 1800 \
      -d "Rebuild and publish the site" \
      /usr/local/bin/update_site
+
+# 2. or for complex bash commands
+sudo pbus register-listener release.published --id update-site \
+     -u www-data -w /srv/site -t 1800 \
+     -d "Rebuild and publish the site" \
+     'export PATH=/home/www-data/.nvm/versions/node/xx.xx/bin:$PATH; npm run-script publish'
 ```
 
 `pbus test release.published` shows what would fire, without running anything.
+
 
 ## Each time, from `prel`
 
@@ -153,7 +160,10 @@ pbusd (root)
 
 `setpriv` is a util-linux tool that drops credentials and then execs: there is
 no privileged process left above the command, and no SUID step on the way
-back up. `--init-groups` loads the user's supplementary groups from
+back up. The hop is skipped altogether when the named account is already the
+one `pbusd` runs as — `user=root` under the service unit, or your own account
+in a test instance — so the chain above loses its `setpriv` line and nothing
+else changes. `--init-groups` loads the user's supplementary groups from
 `/etc/group` — `--regid` actually requires one of the group options, so the
 groups are never inherited from root by accident. The uid and gid come from
 `getent passwd`, as do `HOME` and `SHELL`; a user unknown to the system is
@@ -177,8 +187,11 @@ sudo pbus log -n 3
 
 ## Things worth knowing
 
-- **Without `-u`, the command runs as root.** That is the default, and it is
-  why write access to `/etc/pbus/listeners.d` has to stay with administrators.
+- **There is no default user.** `register-listener` refuses without `-u`, and
+  a listener whose file has no `user=` is refused at dispatch with
+  `no user= set: refusing to run`. Say `-u root` when root is what you want;
+  that is why write access to `/etc/pbus/listeners.d` has to stay with
+  administrators.
 - **Give the target user a reachable working directory.** `-w /srv/site` must
   be readable by `www-data`; the daemon refuses to start the job otherwise and
   says so in the log.
@@ -186,8 +199,9 @@ sudo pbus log -n 3
   `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
 - **If `pbusd` is not running as root** — which happens when you run an
   instance of your own for testing — it cannot drop privileges, so it ignores
-  `user=`, runs the command as itself, and logs
-  `ignoring user=www-data: pbusd is not running as root`.
+  a `user=` naming anyone else, runs the command as itself, and logs
+  `ignoring user=www-data: pbusd is not running as root`. A `user=` naming the
+  account it already runs as is honoured in silence.
 
 ---
 

@@ -13,6 +13,22 @@ case "$1" in
 			systemd-tmpfiles --create /usr/lib/tmpfiles.d/pbus.conf || true
 		fi
 
+		# A listener with no user= used to run as root. It is now refused at
+		# dispatch, so an upgrade has to say which ones just stopped firing.
+		orphans=""
+		for f in /etc/pbus/listeners.d/*.listener; do
+			[ -f "$f" ] || continue
+			if ! grep -qE '^[[:space:]]*user[[:space:]]*=[[:space:]]*[^[:space:]]' "$f"; then
+				id=${f##*/}
+				orphans="$orphans ${id%.listener}"
+			fi
+		done
+		if [ -n "$orphans" ]; then
+			echo "pbus: these listeners have no user= and will no longer fire:$orphans" >&2
+			echo "pbus: add a user= line to each file in /etc/pbus/listeners.d;" >&2
+			echo "pbus: user=root reproduces what they did before." >&2
+		fi
+
 		if [ -d /run/systemd/system ]; then
 			systemctl daemon-reload || true
 			if [ -z "$2" ]; then

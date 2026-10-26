@@ -1,5 +1,12 @@
 pbus (@VERSION@) unstable; urgency=medium
 
+  * A listener must now name the account it runs as. "register-listener"
+    refuses without -u and pbusd refuses a listener whose file has no user=:
+    an absent one used to mean root. Add user=root to restore the previous
+    behaviour; postinst names the listeners concerned on upgrade.
+  * pbusd no longer inserts a setpriv hop when the listener's user is already
+    the one it runs as, and no longer claims "not running as root" when a
+    user= names its own account.
   * First release: named-pipe dispatcher daemon, CLI and interactive session,
     listeners as files under /etc/pbus, per-event keys, systemd unit started
     at boot.

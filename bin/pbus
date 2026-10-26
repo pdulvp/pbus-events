@@ -293,8 +293,14 @@ cmd_register_listener() {
 	done
 	cmdparts=("$@")
 	[[ -n $event && ${#cmdparts[@]} -gt 0 ]] || pbus_die \
-		"usage: pbus register-listener <event> [options] <command...>"
+		"usage: pbus register-listener <event> -u <user> [options] <command...>"
 	pbus_valid_pattern "$event" || pbus_die "invalid event pattern: $event"
+	# The identity is never implied. A listener runs whatever an emitter sends
+	# it, so whose privileges it carries is the one thing nobody should learn
+	# from a default: "-u root" says it out loud, and pbusd refuses a listener
+	# that says nothing.
+	[[ -n $user ]] || pbus_die \
+		"-u <user> is required: name the account the command runs as, or -u root"
 	need_admin "register-listener"
 	ensure_dirs
 
@@ -359,7 +365,7 @@ cmd_list_listeners() {
 		any=1
 		printf '%s %s %s %s %s\n' "$(pbus_pad "$lid" 18)" "$(pbus_pad "${L[event]:-?}" 18)" \
 			"$(pbus_pad "$([[ ${L[enabled]:-1} == 1 ]] && echo enabled || echo disabled)" 8)" \
-			"$(pbus_pad "${L[user]:-root}" 10)" "${L[command]:-}"
+			"$(pbus_pad "${L[user]:-(unset)}" 10)" "${L[command]:-}"
 	done < <(pbus_list_listener_ids | sort)
 	(( any )) || printf '(no listener)\n'
 }
@@ -545,8 +551,12 @@ cmd_test() {
 		[[ $event == ${L[event]:-} ]] || continue
 		found=1
 		printf '  %-18s %s\n' "$lid" "${L[command]:-}"
-		printf '  %-18s (user=%s workdir=%s timeout=%ss)\n\n' "" "${L[user]:-root}" \
+		printf '  %-18s (user=%s workdir=%s timeout=%ss)\n' "" "${L[user]:-(unset)}" \
 			"${L[workdir]:-/}" "${L[timeout]:-$PBUS_DEFAULT_TIMEOUT}"
+		if [[ -z ${L[user]:-} ]]; then
+			printf '  %-18s will NOT run: no user= set, add one to the file\n' ""
+		fi
+		printf '\n'
 	done < <(pbus_list_listener_ids | sort)
 	(( found )) || printf '  (no enabled listener matches)\n'
 }

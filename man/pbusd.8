@@ -52,12 +52,21 @@ disk, only a salted SHA\-256 hash is kept, mode
 .BR 0600 .
 Comparison is constant-time.
 .PP
-Triggered commands run as root unless the listener sets
-.IR user ,
-in which case the daemon drops privileges with
-.BR setpriv (1).
-A listener is therefore as dangerous as a line in root's crontab: grant write
-access to
+A listener must set
+.IR user .
+The daemon refuses to run one whose file does not, logging
+.RB \(lq "no user= set: refusing to run" \(rq :
+an absent
+.I user
+used to mean the daemon's own identity, which under the service unit is root,
+so the dangerous choice was also the silent one.
+.I user=root
+reproduces that behaviour explicitly. Privileges are dropped with
+.BR setpriv (1),
+which is skipped when the named account is already the one the daemon runs as.
+A listener with
+.I user=root
+is as dangerous as a line in root's crontab: grant write access to
 .I /etc/pbus/listeners.d
 to administrators only.
 .SH CONFIGURATION

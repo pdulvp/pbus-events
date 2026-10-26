@@ -103,23 +103,31 @@ pbusd_exec_listener() {
 	local wd="${L[workdir]:-/}"
 	local to="${L[timeout]:-$PBUS_DEFAULT_TIMEOUT}"
 	[[ -n $cmd ]] || { pbus_log error "[$lid] no command set"; return 1; }
+	# A listener runs whatever an emitter sends it, so the identity it carries
+	# is never inferred. An absent user= used to mean "the daemon's own", that
+	# is root under the service unit, which made the dangerous choice the
+	# silent one. Add user=root to the file to get the old behaviour back.
+	[[ -n $user ]] || { pbus_log error "[$lid] no user= set: refusing to run"; return 1; }
 	[[ $to =~ ^[0-9]+$ ]] || to="$PBUS_DEFAULT_TIMEOUT"
 
-	# Defaults describe whoever pbusd itself runs as, which is root under the
-	# service unit but not in an unprivileged test instance. Announcing
-	# USER=root while running as somebody else would simply be false.
+	# Resolved before anything is decided: pbusd may be running unprivileged
+	# in a test instance, where a user= naming its own account is perfectly
+	# honourable and only a different one is out of reach.
 	local home="$PBUSD_SELF_HOME" shell="$PBUSD_SELF_SHELL" uname="$PBUSD_SELF_USER"
 	local -a runner=()
-	if [[ -n $user ]]; then
-		if (( EUID != 0 )); then
-			pbus_log warn "[$lid] ignoring user=$user: pbusd is not running as root"
-		else
-			local uid gid pwent
-			pwent=$(getent passwd "$user") || { pbus_log error "[$lid] unknown user: $user"; return 1; }
-			IFS=: read -r uname _ uid gid _ home shell <<<"$pwent"
-			[[ -n $shell ]] || shell="/bin/sh"
-			runner=(setpriv --reuid "$uid" --regid "$gid" --init-groups --)
-		fi
+	local uid gid pwent
+	pwent=$(getent passwd "$user") || { pbus_log error "[$lid] unknown user: $user"; return 1; }
+	IFS=: read -r uname _ uid gid _ home shell <<<"$pwent"
+	[[ -n $shell ]] || shell="/bin/sh"
+	if (( uid == EUID )); then
+		# Already the right identity: no credentials to drop, so no setpriv
+		# hop. The environment still describes the named user.
+		:
+	elif (( EUID != 0 )); then
+		pbus_log warn "[$lid] ignoring user=$user: pbusd is not running as root"
+		uname="$PBUSD_SELF_USER"; home="$PBUSD_SELF_HOME"; shell="$PBUSD_SELF_SHELL"
+	else
+		runner=(setpriv --reuid "$uid" --regid "$gid" --init-groups --)
 	fi
 
 	[[ -d $wd ]] || { pbus_log error "[$lid] working directory is missing: $wd"; return 1; }

@@ -22,6 +22,7 @@ DAEMON_PID=""
 
 PASS=0
 FAIL=0
+SELF=$(id -un)
 
 cleanup() {
 	[[ -n $DAEMON_PID ]] && kill "$DAEMON_PID" 2>/dev/null
@@ -133,20 +134,51 @@ check "an invalid name is refused" '! "$PBUS" register-event "bad name" >/dev/nu
 check "list-events shows the event" '[[ $("$PBUS" list-events) == *release* ]]'
 
 # ----------------------------------------------------------- listeners ---
-"$PBUS" register-listener release --id site /bin/sh -c "echo \"\$PBUS_PAYLOAD\" > $WORK/out/site.txt" >/dev/null
+"$PBUS" register-listener release --id site -u "$SELF" /bin/sh -c "echo \"\$PBUS_PAYLOAD\" > $WORK/out/site.txt" >/dev/null
 check "register-listener succeeds" '[[ -f "$PBUS_ETC/listeners.d/site.listener" ]]'
 check "list-listeners shows the listener" '[[ $("$PBUS" list-listeners) == *site* ]]'
 check "test shows what would be triggered" '[[ $("$PBUS" test release) == *site* ]]'
 
 # ------------------------------------------------- identity of a listener ---
-"$PBUS" register-listener release --id whoami /bin/sh -c "id -un > $WORK/out/whoami.txt; echo \$USER >> $WORK/out/whoami.txt" >/dev/null
+check "register-listener without -u is refused" '
+	! "$PBUS" register-listener release --id nouser /bin/true >/dev/null 2>&1'
+check "register-listener with -u root is accepted" '
+	"$PBUS" register-listener release --id asroot -u root /bin/true >/dev/null 2>&1'
+"$PBUS" unregister-listener asroot >/dev/null 2>&1
+
+"$PBUS" register-listener release --id whoami -u "$SELF" /bin/sh -c "id -un > $WORK/out/whoami.txt; echo \$USER >> $WORK/out/whoami.txt" >/dev/null
 "$PBUS" emit release -q
 wait_file "$WORK/out/whoami.txt" 50
-check "a listener without user= runs as the daemon itself" '
-	[[ $(head -1 "$WORK/out/whoami.txt") == "$(id -un)" ]]'
+check "a listener runs as the user it names" '
+	[[ $(head -1 "$WORK/out/whoami.txt") == "$SELF" ]]'
 check "USER matches who the command actually runs as" '
-	[[ $(sed -n 2p "$WORK/out/whoami.txt") == "$(id -un)" ]]'
+	[[ $(sed -n 2p "$WORK/out/whoami.txt") == "$SELF" ]]'
+check "naming our own account does not log an ignored user=" '
+	! grep -q "ignoring user=$SELF" "$PBUS_LOG"'
 "$PBUS" unregister-listener whoami >/dev/null
+
+# A file written by hand, as the documentation says it may be: no user=, so
+# the daemon must refuse it and still fire the listeners that are complete.
+cat >"$PBUS_ETC/listeners.d/legacy.listener" <<EOF
+id=legacy
+event=release
+command=/bin/sh -c "touch $WORK/out/legacy.txt"
+workdir=/
+timeout=30
+enabled=1
+EOF
+rm -f "$WORK/out/site.txt" "$WORK/out/legacy.txt"
+"$PBUS" emit release --payload "sibling" -q
+check "a listener with no user= is refused at dispatch" '
+	sleep 1; [[ ! -e "$WORK/out/legacy.txt" ]]'
+check "the refusal is logged" 'grep -q "\[legacy\] no user= set" "$PBUS_LOG"'
+check "a sibling listener on the same event still fires" '
+	wait_file "$WORK/out/site.txt" 50'
+check "test warns that such a listener will not run" '
+	[[ $("$PBUS" test release) == *"will NOT run"* ]]'
+check "list-listeners shows (unset) rather than root" '
+	[[ $("$PBUS" list-listeners) == *"(unset)"* ]]'
+rm -f "$PBUS_ETC/listeners.d/legacy.listener"
 
 # ------------------------------------------------------------ emission ---
 "$PBUS" emit release --payload "v1.2.3" -q
@@ -184,13 +216,13 @@ check "emit says when nothing matched" 'grep -q "no listener matched" "$WORK/out
 "$PBUS" emit release --key "pbk_wrong" --no-wait >/dev/null 2>&1
 check "--no-wait keeps fire-and-forget" '(( $? == 0 ))'
 check "emit does not wait for a slow listener" '
-	"$PBUS" register-listener release --id slow /bin/sh -c "sleep 5" >/dev/null
+	"$PBUS" register-listener release --id slow -u "$SELF" /bin/sh -c "sleep 5" >/dev/null
 	s=$SECONDS; "$PBUS" emit release -q >/dev/null 2>&1; (( SECONDS - s < 3 ))'
 "$PBUS" unregister-listener slow >/dev/null
 
 # -------------------------------------------------------- glob pattern ---
 "$PBUS" register-event release.site --no-key >/dev/null
-"$PBUS" register-listener "release.*" --id glob /bin/sh -c "echo \$PBUS_EVENT > $WORK/out/glob.txt" >/dev/null
+"$PBUS" register-listener "release.*" --id glob -u "$SELF" /bin/sh -c "echo \$PBUS_EVENT > $WORK/out/glob.txt" >/dev/null
 "$PBUS" emit release.site -q
 check "a glob listener is triggered" 'wait_file "$WORK/out/glob.txt" 50'
 check "PBUS_EVENT carries the real name" '[[ $(cat "$WORK/out/glob.txt" 2>/dev/null) == "release.site" ]]'
@@ -206,7 +238,7 @@ check "a disabled listener does not run" '! [[ -e "$WORK/out/glob.txt" ]]'
 check "enable puts the listener back in service" '[[ $(grep -c "^enabled=1" "$PBUS_ETC/listeners.d/glob.listener") == 1 ]]'
 
 # -------------------------------------------------------- large payload ---
-"$PBUS" register-listener release --id big /bin/sh -c "wc -c > $WORK/out/big.txt" >/dev/null
+"$PBUS" register-listener release --id big -u "$SELF" /bin/sh -c "wc -c > $WORK/out/big.txt" >/dev/null
 head -c 20000 /dev/zero | tr '\0' 'a' >"$WORK/out/big-payload"
 "$PBUS" emit release --payload-file "$WORK/out/big-payload" -q
 check "a 20 KiB payload goes through the spool" 'wait_file "$WORK/out/big.txt" 80'

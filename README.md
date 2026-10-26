@@ -29,8 +29,8 @@ sudo systemctl enable --now pbus
 # Declare an event; the key is shown once.
 sudo pbus register-event release -d "A new version was released" --save
 
-# Register a command.
-sudo pbus register-listener release --id site /usr/local/bin/update_site
+# Register a command. -u says who it runs as; there is no default.
+sudo pbus register-listener release --id site -u www-data /usr/local/bin/update_site
 
 # Check without running anything, then emit.
 pbus test release
@@ -52,14 +52,16 @@ commands; `help` lists them.
 | `unregister-event <name> [--purge-listeners]` | remove an event |
 | `rotate-key <name> [--save]` | replace the key |
 | `save-key <name>` | put a key in your keyring |
-| `register-listener <event> [options] <command…>` | subscribe a command |
+| `register-listener <event> -u <user> [options] <command…>` | subscribe a command |
 | `list-listeners`, `show-listener <id>` | inventory of listeners |
 | `unregister-listener <id>`, `enable <id>`, `disable <id>` | manage listeners |
 | `emit <event> [--payload …]` | emit an event, and report the daemon's verdict |
 | `test <event>` | show what would run |
 | `status`, `log [-f]`, `reload` | operations |
 
-Useful `register-listener` options: `--id`, `--user`, `--workdir`,
+`--user` is required: a listener runs whatever an emitter sends it, so whose
+privileges it carries is never left to a default. Pass `-u root` to say root
+out loud. Other `register-listener` options: `--id`, `--workdir`,
 `--timeout`, `--description`, `--disabled`.
 
 A listener's event name accepts a glob pattern: `release.*` catches
@@ -147,10 +149,13 @@ channel nobody else can read. To keep it out of `ps`, prefer the keyring
 An event declared with `--no-key` accepts any local emission: keep it for
 events without consequence.
 
-Commands run as root unless the listener sets `user`, in which case the daemon
-drops privileges with `setpriv`. A listener is therefore as powerful as a line
-in root's crontab: write access to `/etc/pbus/listeners.d` must stay with
-administrators.
+A listener must name the account it runs as. `register-listener` refuses
+without `--user`, and `pbusd` refuses to run a listener whose file has no
+`user=`, saying so in the log — an absent one used to mean root, which made
+the dangerous choice the silent one. The daemon drops privileges with
+`setpriv`, and skips that step when the named user is already the one it runs
+as. A listener with `user=root` is as powerful as a line in root's crontab:
+write access to `/etc/pbus/listeners.d` must stay with administrators.
 
 ## Why not D-Bus
 
@@ -165,7 +170,7 @@ through a spool in `/run/pbus`.
 `pbus-notify` pops a notification on a user's desktop from a listener:
 
 ```sh
-sudo pbus register-listener release.published --id popup \
+sudo pbus register-listener release.published --id popup -u root \
      'pbus-notify -u alice "Release $PBUS_PAYLOAD published"'
 ```
 
