@@ -104,9 +104,18 @@ needed.
 
 ```
 /etc/pbus/pbus.conf                  log, trace level, concurrency
-/etc/pbus/events.d/release.event     one file per event
-/etc/pbus/listeners.d/site.listener  one file per listener
+/etc/pbus/events.d/release.event     one file per event, 0644
+/etc/pbus/listeners.d/site.listener  one file per listener, 0640 root:<its user>
 ```
+
+A listener's file is readable by root and by the account the command runs as,
+nobody else: a command line is where tokens tend to end up, and it also says
+which listener handles the payload and how. Its own user loses nothing by
+reading it — that account already receives the payload and the privileges.
+Event files stay world-readable because an emitter has to read one to learn
+whether a key is required. If you edit `user=` by hand, `chgrp` the file to
+match; `pbus list-listeners` and `show-listener` point out the mismatch when
+run as root.
 
 A listener looks like this:
 

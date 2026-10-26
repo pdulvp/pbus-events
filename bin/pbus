@@ -38,6 +38,20 @@ ensure_dirs() {
 
 keystore_path() { printf '%s/%s\n' "$PBUS_KEYSTORE" "$1"; }
 
+# Prints the account a listener file is readable by, when that no longer
+# matches the user= it declares. Only root can see both to compare, and only
+# root can put it right, so the mismatch is reported rather than repaired:
+# hand-editing a listener is supported, and a daemon quietly rewriting the
+# ownership of configuration files would be worse than the drift.
+listener_group_drift() {
+	local lf="$1" user="$2" grp
+	(( EUID == 0 )) || return 1
+	[[ -n $user && -r $lf ]] || return 1
+	grp=$(stat -c %G "$lf" 2>/dev/null) || return 1
+	[[ $grp == "$user" ]] && return 1
+	printf '%s' "$grp"
+}
+
 store_key() {
 	local event="$1" key="$2" path
 	path=$(keystore_path "$event")
@@ -341,7 +355,15 @@ cmd_register_listener() {
 
 	local lf; lf=$(pbus_listener_file "$id")
 	: >"$lf" || pbus_die "cannot write $lf"
-	chmod 0644 "$lf"
+	# 0640, grouped to the account the command runs as. A command line is
+	# where tokens and credentialed URLs end up, and it also says which
+	# listener handles the payload and how — so it is kept from accounts with
+	# no part in it. The listener's own user already receives the payload and
+	# the privileges at run time, so reading the definition tells it nothing
+	# new. Giving a file away needs root, which registration has in a real
+	# install; where it does not, the mode alone stands.
+	chmod 0640 "$lf"
+	chgrp "$user" "$lf" 2>/dev/null || true
 	pbus_kv_set "$lf" id "$id"
 	pbus_kv_set "$lf" event "$event"
 	pbus_kv_set "$lf" command "$cmd"
@@ -360,10 +382,21 @@ cmd_list_listeners() {
 	local -A L
 	printf '%s %s %s %s %s\n' "$(pbus_pad ID 18)" "$(pbus_pad EVENT 18)" \
 		"$(pbus_pad STATE 8)" "$(pbus_pad USER 10)" "COMMAND"
-	local any=0
+	local any=0 lf drift
 	while read -r lid; do
 		[[ -n $lid ]] || continue
-		L=(); pbus_kv_load "$(pbus_listener_file "$lid")" L || continue
+		lf=$(pbus_listener_file "$lid")
+		if [[ ! -r $lf ]]; then
+			# Its own user may read it, and we are not that user. Saying so
+			# beats dropping the row and pretending it does not exist.
+			[[ -n $filter ]] && continue
+			any=1
+			printf '%s %s %s %s %s\n' "$(pbus_pad "$lid" 18)" "$(pbus_pad "?" 18)" \
+				"$(pbus_pad "?" 8)" "$(pbus_pad "?" 10)" \
+				"(not readable: it belongs to the account it runs as)"
+			continue
+		fi
+		L=(); pbus_kv_load "$lf" L || continue
 		if [[ -n $filter ]]; then
 			# shellcheck disable=SC2053
 			[[ ${L[event]:-} == "$filter" || $filter == ${L[event]:-} ]] || continue
@@ -372,6 +405,10 @@ cmd_list_listeners() {
 		printf '%s %s %s %s %s\n' "$(pbus_pad "$lid" 18)" "$(pbus_pad "${L[event]:-?}" 18)" \
 			"$(pbus_pad "$([[ ${L[enabled]:-1} == 1 ]] && echo enabled || echo disabled)" 8)" \
 			"$(pbus_pad "${L[user]:-(unset)}" 10)" "${L[command]:-}"
+		if drift=$(listener_group_drift "$lf" "${L[user]:-}"); then
+			printf '%s group is %s, not %s: chgrp %s %s\n' \
+				"$(pbus_pad "" 18)" "$drift" "${L[user]}" "${L[user]}" "$lf"
+		fi
 	done < <(pbus_list_listener_ids | sort)
 	(( any )) || printf '(no listener)\n'
 }
@@ -381,8 +418,16 @@ cmd_show_listener() {
 	[[ -n $id ]] || pbus_die "usage: pbus show-listener <id>"
 	local lf; lf=$(pbus_listener_file "$id")
 	[[ -f $lf ]] || pbus_die "unknown listener: $id"
+	[[ -r $lf ]] || pbus_die \
+		"not permitted: $id is readable by the account it runs as, and by root (try sudo)"
 	cat "$lf"
 	printf '\nfile=%s\n' "$lf"
+	local user drift
+	user=$(pbus_kv_get "$lf" user) || user=""
+	if drift=$(listener_group_drift "$lf" "$user"); then
+		printf 'warning: the file is group %s but user= is %s; run: chgrp %s %s\n' \
+			"$drift" "$user" "$user" "$lf" >&2
+	fi
 }
 
 cmd_unregister_listener() {
@@ -555,11 +600,13 @@ cmd_test() {
 	local pat
 	pat=$(pbus_kv_get "$(pbus_event_file "$event")" payload_pattern) || pat=""
 	[[ -n $pat ]] && printf '  payload must match %s\n\n' "$pat"
-	local lid found=0
+	local lid found=0 hidden=0 lf
 	local -A L
 	while read -r lid; do
 		[[ -n $lid ]] || continue
-		L=(); pbus_kv_load "$(pbus_listener_file "$lid")" L || continue
+		lf=$(pbus_listener_file "$lid")
+		if [[ ! -r $lf ]]; then (( hidden++ )); continue; fi
+		L=(); pbus_kv_load "$lf" L || continue
 		[[ ${L[enabled]:-1} == 1 ]] || continue
 		# shellcheck disable=SC2053
 		[[ $event == ${L[event]:-} ]] || continue
@@ -572,7 +619,11 @@ cmd_test() {
 		fi
 		printf '\n'
 	done < <(pbus_list_listener_ids | sort)
-	(( found )) || printf '  (no enabled listener matches)\n'
+	(( found )) || printf '  (no enabled listener matches among the ones you can read)\n'
+	if (( hidden )); then
+		printf '  %s listener(s) could not be read and are not accounted for\n' "$hidden"
+		printf '  here; each belongs to the account it runs as. Try sudo.\n'
+	fi
 }
 
 # --------------------------------------------------------------- misc ----

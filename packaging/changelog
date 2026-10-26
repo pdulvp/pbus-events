@@ -1,5 +1,12 @@
 pbus (@VERSION@) unstable; urgency=medium
 
+  * A listener's file is 0640 and grouped to the account its command runs as:
+    root and that account may read it, nobody else. A command line is where
+    tokens end up, and it also says which listener handles the payload and
+    how. Event files stay 0644 because an emitter must read one to learn
+    whether a key is needed. list-listeners, test and show-listener now say
+    when they could not read a listener instead of leaving it out, and
+    pbus_kv_set carries the mode and group across the rewrite it does.
   * A triggered command no longer inherits the daemon's descriptor on the
     bus, which let any listener read the keys of every other event as they
     passed and consume messages addressed to the daemon.

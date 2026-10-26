@@ -35,11 +35,20 @@ ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; (( PASS++ )); }
 ko()   { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; (( FAIL++ )); }
 check(){ if eval "$2"; then ok "$1"; else ko "$1"; fi; }
 
-# Waits for a file to appear, at most N tenths of a second.
+# Waits for a file to appear with something in it, at most N tenths of a
+# second. Existence alone is not enough: the listener that creates it is a
+# separate process, so a check on its contents immediately after the file
+# appears can read it half-written, or empty. Every caller here expects a
+# non-empty file; a test about a file that must NOT appear tests that
+# directly.
 wait_file() {
 	local f="$1" n="${2:-50}" i
 	for (( i = 0; i < n; i++ )); do
-		[[ -e $f ]] && return 0
+		if [[ -e $f ]]; then
+			# A regular file has to have something in it; the named pipe this
+			# also waits for is never anything but empty.
+			[[ ! -f $f || -s $f ]] && return 0
+		fi
 		sleep 0.1
 	done
 	return 1
@@ -129,6 +138,8 @@ check "the key is shown once" 'grep -q "key: pbk_" "$WORK/out/reg"'
 check "the key lands in the keyring" '[[ -s "$WORK/keys/release" ]]'
 check "the keyring file is 0600" '[[ $(stat -c %a "$WORK/keys/release") == 600 ]]'
 check "the log file is 0640" '[[ $(stat -c %a "$PBUS_LOG") == 640 ]]'
+check "an event file stays readable by emitters" '
+	[[ $(stat -c %a "$PBUS_ETC/events.d/release.event") == 644 ]]'
 check "the auth file is 0600" '[[ $(stat -c %a "$PBUS_VAR/auth/release.auth") == 600 ]]'
 check "the plaintext key is not kept" '! grep -qi "pbk_" "$PBUS_VAR/auth/release.auth" "$PBUS_ETC/events.d/release.event"'
 check "a duplicate is refused" '! "$PBUS" register-event release >/dev/null 2>&1'
@@ -330,6 +341,33 @@ check "the file aimed at by the traversal is intact" '[[ -e "$WORK/out/target.tx
 printf 'PBUS1\trelease\tkey\tdeadbeef\tts\t-\n' >"$PBUS_RUN/bus"
 sleep 0.3
 check "an unknown protocol version is ignored" 'grep -q "unknown protocol" "$PBUS_LOG"'
+
+# ------------------------------------------ who may read a listener file ---
+check "a listener file is 0640" '
+	[[ $(stat -c %a "$PBUS_ETC/listeners.d/site.listener") == 640 ]]'
+check "it is grouped to the account it runs as" '
+	[[ $(stat -c %G "$PBUS_ETC/listeners.d/site.listener") == "$(id -gn)" ]]'
+"$PBUS" disable site >/dev/null; "$PBUS" enable site >/dev/null
+check "the mode survives an edit" '
+	[[ $(stat -c %a "$PBUS_ETC/listeners.d/site.listener") == 640 ]]'
+
+# Stands in for someone else's listener: unreadable to us either way.
+"$PBUS" register-listener release --id hidden -u "$SELF" /bin/true >/dev/null
+chmod 000 "$PBUS_ETC/listeners.d/hidden.listener"
+check "list-listeners says a listener could not be read" '
+	[[ $("$PBUS" list-listeners) == *"hidden"*"not readable"* ]]'
+check "test accounts for what it could not read" '
+	[[ $("$PBUS" test release) == *"could not be read"* ]]'
+"$PBUS" show-listener hidden >"$WORK/out/hidden" 2>&1
+HIDDEN_RC=$?
+check "show-listener refuses rather than erroring out" '
+	(( HIDDEN_RC == 1 )) && grep -q "not permitted" "$WORK/out/hidden"'
+check "it does not print the file= line as though it worked" '
+	! grep -q "^file=" "$WORK/out/hidden"'
+check "a readable listener is still shown in full" '
+	[[ $("$PBUS" show-listener site) == *"command="* ]]'
+chmod 640 "$PBUS_ETC/listeners.d/hidden.listener"
+"$PBUS" unregister-listener hidden >/dev/null
 
 # ------------------------------------------- what a listener can reach ---
 # The daemon holds the bus open read-write; a listener must not inherit it,

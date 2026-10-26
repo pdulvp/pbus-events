@@ -181,7 +181,18 @@ Daemon configuration.
 One event's declaration.
 .TP
 .I /etc/pbus/listeners.d/<id>.listener
-One listener's declaration. Any edit applies to the next event.
+One listener's declaration, mode
+.B 0640
+and grouped to the account the command runs as: root and that account may read
+it, nobody else. Any edit applies to the next event; an edit to
+.I user
+should be followed by a matching
+.BR chgrp ,
+which
+.B list-listeners
+and
+.B show-listener
+report when run as root.
 .TP
 .I /var/lib/pbus/auth/<name>.auth
 Salt and hash of the key, readable by root only.

@@ -119,8 +119,17 @@ pbus_kv_get() {
 }
 
 # pbus_kv_set <file> <key> <value>: replace the line, or append it.
+#
+# The file is rewritten by rename, which replaces the inode: without carrying
+# the mode and the group across, every call would quietly reset them to
+# whatever the caller's umask gives, and a file deliberately made 0640 or
+# 0600 would drift back to world-readable on the next edit.
 pbus_kv_set() {
-	local file="$1" key="$2" value="$3" tmp line k found=0
+	local file="$1" key="$2" value="$3" tmp line k found=0 mode="" grp=""
+	if [[ -e $file ]]; then
+		mode=$(stat -c %a "$file" 2>/dev/null) || mode=""
+		grp=$(stat -c %G "$file" 2>/dev/null) || grp=""
+	fi
 	tmp="$file.tmp.$$"
 	: >"$tmp" || return 1
 	if [[ -r $file ]]; then
@@ -136,6 +145,10 @@ pbus_kv_set() {
 		done <"$file"
 	fi
 	(( found )) || printf '%s=%s\n' "$key" "$value" >>"$tmp"
+	[[ -n $mode ]] && chmod "$mode" "$tmp" 2>/dev/null
+	# Giving a file away needs root; where it is not permitted the mode still
+	# stands and the group simply stays the caller's.
+	[[ -n $grp ]] && chgrp "$grp" "$tmp" 2>/dev/null
 	mv -f "$tmp" "$file"
 }
 
