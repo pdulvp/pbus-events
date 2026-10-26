@@ -52,6 +52,12 @@ pbusd_setup() {
 	mkdir -p "$PBUS_SPOOL" || return 1
 	chmod 1733 "$PBUS_SPOOL" 2>/dev/null || true
 
+	# Where a spooled payload is moved before being read. Root only: once a
+	# file is in here its emitter can no longer unlink it or replace it with a
+	# symlink, which is what makes the checks on it meaningful.
+	mkdir -p "$PBUS_STAGE" || return 1
+	chmod 0700 "$PBUS_STAGE" 2>/dev/null || true
+
 	# Acknowledgements are dropped here, one file per emission, named after
 	# the nonce. Same mode as the spool: an emitter reaches its own reply by
 	# name without being able to list anyone else's.
@@ -132,17 +138,33 @@ pbusd_exec_listener() {
 
 	[[ -d $wd ]] || { pbus_log error "[$lid] working directory is missing: $wd"; return 1; }
 
+	# Bytes, not characters: ${#payload} counts characters, and the kernel
+	# limit is on bytes, so a multibyte payload would slip past a check on
+	# the length bash reports.
+	local bytes
+	bytes=$(printf '%s' "$payload" | wc -c)
+
 	local -a envv=(
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 		"HOME=$home" "USER=$uname" "LOGNAME=$uname" "SHELL=$shell"
 		"PBUS_EVENT=$event" "PBUS_EVENT_ID=$eid" "PBUS_TS=$ts"
-		"PBUS_LISTENER=$lid" "PBUS_PAYLOAD=$payload"
+		"PBUS_LISTENER=$lid" "PBUS_PAYLOAD_SIZE=$bytes"
 	)
+	# Omitted rather than shortened above the limit: a listener handed a
+	# silently truncated payload has no way of knowing, while one handed no
+	# PBUS_PAYLOAD at all can look at PBUS_PAYLOAD_SIZE and read standard
+	# input, which carries the whole thing either way.
+	if (( bytes > PBUS_MAX_ENV_PAYLOAD )); then
+		pbus_log warn "[$lid] payload is $bytes bytes: PBUS_PAYLOAD omitted (limit $PBUS_MAX_ENV_PAYLOAD), read it on standard input"
+	else
+		envv+=("PBUS_PAYLOAD=$payload")
+	fi
 
 	local start=$SECONDS rc
 	pbus_log info "[$lid] starting (event=$event id=$eid)"
-	# The payload is handed over twice, through PBUS_PAYLOAD and on standard
-	# input, which sidesteps the size limit of the environment.
+	# The payload is handed over on standard input as well as in the
+	# environment, and on standard input alone when it is too large for an
+	# environment string.
 	printf '%s' "$payload" \
 		| ( cd "$wd" && exec setsid "${runner[@]}" env "${envv[@]}" \
 			timeout -k 5 "$to" /bin/bash -c "$cmd" ) 2>&1 \
@@ -155,6 +177,47 @@ pbusd_exec_listener() {
 	else
 		pbus_log warn "[$lid] finished in $(( SECONDS - start ))s (status $rc)"
 	fi
+	return 0
+}
+
+# pbusd_read_spool <nonce> <event id>
+#
+# A spooled payload is written by its emitter, in a directory everyone may
+# write to, so the file cannot be trusted and cannot even be checked where it
+# lies: between a test on the path and a read of the path, its owner is free to
+# unlink it and leave a symlink to something else, which this daemon would
+# follow as root. rename(2) is the way out — it acts on the name itself rather
+# than on what the name leads to, and it is atomic. Once the file has been
+# moved into a directory only root may write, nothing can change underneath
+# the checks that follow.
+pbusd_read_spool() {
+	local nonce="$1" eid="$2"
+	local sf="$PBUS_SPOOL/$nonce" staged="$PBUS_STAGE/$nonce"
+	if ! mv -f "$sf" "$staged" 2>/dev/null; then
+		pbus_log warn "payload missing from the spool for id $eid"
+		return 0
+	fi
+	local verdict=""
+	if [[ -L $staged ]]; then
+		# Not a payload: a request that the daemon read some other file.
+		verdict="a symbolic link"
+	elif [[ ! -f $staged ]]; then
+		verdict="not a regular file"
+	elif (( $(stat -c %h "$staged" 2>/dev/null || echo 0) != 1 )); then
+		# A hardlink to a file elsewhere would arrive with its own link count,
+		# and a payload just written by its emitter has exactly one.
+		verdict="a hard link to another file"
+	fi
+	if [[ -n $verdict ]]; then
+		pbus_log warn "spooled payload for id $eid is $verdict, refused"
+		rm -f "$staged"
+		return 0
+	fi
+	if (( $(stat -c %s "$staged" 2>/dev/null || echo 0) > PBUS_MAX_PAYLOAD )); then
+		pbus_log warn "payload truncated to $PBUS_MAX_PAYLOAD bytes for id $eid"
+	fi
+	head -c "$PBUS_MAX_PAYLOAD" -- "$staged"
+	rm -f "$staged"
 	return 0
 }
 
@@ -281,15 +344,19 @@ pbusd_handle() {
 
 	local payload=""
 	if [[ $enc == "@spool" ]]; then
-		local sf="$PBUS_SPOOL/$nonce"
-		if [[ -f $sf && ! -L $sf ]]; then
-			payload=$(cat "$sf")
-			rm -f "$sf"
-		else
-			pbus_log warn "payload missing from the spool for id $eid"
-		fi
+		payload=$(pbusd_read_spool "$nonce" "$eid")
 	elif [[ -n $enc && $enc != "-" ]]; then
-		payload=$(printf '%s' "$enc" | base64 -d 2>/dev/null) || payload=""
+		# The status is taken apart from the assignment on purpose: under
+		# pipefail the pipeline reports SIGPIPE when head closes it early,
+		# which is exactly what a payload at the cap looks like and must not
+		# be mistaken for a decoding failure.
+		payload=$(printf '%s' "$enc" | base64 -d 2>/dev/null | head -c "$PBUS_MAX_PAYLOAD")
+		# Reaching the cap exactly is how a truncation shows itself here; a
+		# payload of precisely that size is warned about for nothing, which
+		# costs a log line and no correctness.
+		if (( $(printf '%s' "$payload" | wc -c) >= PBUS_MAX_PAYLOAD )); then
+			pbus_log warn "payload truncated to $PBUS_MAX_PAYLOAD bytes for event $event (id=$eid)"
+		fi
 	fi
 
 	# Checked before the listeners are even selected, and the payload itself is
@@ -333,6 +400,14 @@ pbusd_sweep_spool() {
 		age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))
 		if (( age > 3600 )); then
 			rm -f "$f" && pbus_log warn "removed abandoned spool file: ${f##*/}"
+		fi
+	done
+	# Nobody else can clean this one, so a crash between the move and the
+	# removal would leave a payload sitting here for good.
+	for f in "$PBUS_STAGE"/*; do
+		age=$(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") ))
+		if (( age > 3600 )); then
+			rm -f "$f" && pbus_log warn "removed abandoned staged payload: ${f##*/}"
 		fi
 	done
 	for f in "$PBUS_REPLY"/*; do

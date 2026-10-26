@@ -1,6 +1,7 @@
 # pbus directories, recreated at boot even without systemd-run.
 d /run/pbus 0755 root root -
 d /run/pbus/spool 1733 root root -
+d /run/pbus/stage 0700 root root -
 d /run/pbus/reply 1733 root root -
 d /var/log/pbus 0755 root root -
 d /var/lib/pbus 0750 root root -

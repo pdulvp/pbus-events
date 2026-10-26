@@ -81,6 +81,30 @@ is refused however the listeners are written; the emitter is told, and
 exits 6. The payload itself is never written to the log. An expression the
 shell cannot compile is a configuration fault and refuses every emission for
 that event.
+.PP
+A payload too large for one atomic write to the pipe is left in
+.I /run/pbus/spool
+by its emitter, in a directory everyone may write to. The daemon does not read
+it there: a test on a path and a read of the same path are two operations, and
+between them the file's owner may replace it with a symbolic link that the
+daemon would follow as root. It is moved first into
+.IR /run/pbus/stage ,
+mode
+.BR 0700 ,
+with
+.BR rename (2),
+which acts on the name itself and is atomic; once there, nothing outside the
+daemon can change it, and a symbolic link, a link count above one, or a size
+beyond
+.I max_payload
+is refused or trimmed with a line in the log.
+.BR proc (5)
+settings
+.I fs.protected_symlinks
+and
+.I fs.protected_hardlinks
+guard the same ground and are enabled by default on Debian, but the daemon no
+longer depends on them.
 .SH CONFIGURATION
 .TP
 .B log_level
@@ -91,6 +115,14 @@ Path of the log.
 .TP
 .B max_jobs
 Maximum number of concurrent commands; beyond it, the daemon waits.
+.TP
+.B max_payload
+Largest payload read, in bytes, default 1048576. Beyond it the payload is
+trimmed and the log says so. Above 100000 bytes a payload is also left out of
+the triggered command's environment and reaches it on standard input only; see
+.I PBUS_PAYLOAD_SIZE
+in
+.BR pbus (1).
 .TP
 .B default_timeout
 Default maximum run time of a command, in seconds.

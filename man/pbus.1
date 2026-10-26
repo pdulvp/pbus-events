@@ -147,6 +147,14 @@ in
 .BR pbusd (8)
 for refusing a hostile shape outright.
 .TP
+.B PBUS_PAYLOAD_SIZE
+Size of the payload in bytes, always set. Above 100000 bytes the payload is
+left out of the environment altogether — the kernel refuses an
+.BR execve (2)
+whose environment holds a string that long, which would stop the command from
+running at all — so a command that must cope with any size should read
+standard input and use this to tell an empty payload from an omitted one.
+.TP
 .B PBUS_EVENT_ID
 Unique id of the emission, repeated in the log.
 .TP

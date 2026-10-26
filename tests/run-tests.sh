@@ -55,6 +55,7 @@ log_level=debug
 log_file=$WORK/log/pbus.log
 max_jobs=4
 default_timeout=30
+max_payload=1048576
 EOT
 
 # ------------------------------------------------------------- version ---
@@ -244,6 +245,68 @@ head -c 20000 /dev/zero | tr '\0' 'a' >"$WORK/out/big-payload"
 check "a 20 KiB payload goes through the spool" 'wait_file "$WORK/out/big.txt" 80'
 check "the payload arrives whole on stdin" '[[ $(tr -d " " < "$WORK/out/big.txt" 2>/dev/null) == 20000 ]]'
 check "the spool is emptied afterwards" '[[ -z $(ls -A "$PBUS_RUN/spool") ]]'
+check "the staging directory is emptied too" '[[ -z $(ls -A "$PBUS_RUN/stage") ]]'
+check "the staging directory is root-only" '[[ $(stat -c %a "$PBUS_RUN/stage") == 700 ]]'
+
+# Over MAX_ARG_STRLEN: setting PBUS_PAYLOAD would make execve fail with E2BIG
+# and the command would never run, so it is left out and stdin carries it.
+"$PBUS" register-listener release --id huge -u "$SELF" \
+	/bin/sh -c "wc -c > $WORK/out/huge.txt; echo \"[\${PBUS_PAYLOAD-unset}]\" > $WORK/out/huge-env.txt; echo \$PBUS_PAYLOAD_SIZE > $WORK/out/huge-size.txt" >/dev/null
+"$PBUS" disable big >/dev/null
+head -c 140000 /dev/zero | tr '\0' 'a' >"$WORK/out/huge-payload"
+"$PBUS" emit release --payload-file "$WORK/out/huge-payload" -q
+check "a 140 KB payload still reaches the command" 'wait_file "$WORK/out/huge.txt" 100'
+check "it arrives whole on standard input" '
+	[[ $(tr -d " " < "$WORK/out/huge.txt" 2>/dev/null) == 140000 ]]'
+check "PBUS_PAYLOAD is left out of the environment" '
+	[[ $(cat "$WORK/out/huge-env.txt" 2>/dev/null) == "[unset]" ]]'
+check "PBUS_PAYLOAD_SIZE still reports the real size" '
+	[[ $(cat "$WORK/out/huge-size.txt" 2>/dev/null) == 140000 ]]'
+check "the omission is logged" 'grep -q "PBUS_PAYLOAD omitted" "$PBUS_LOG"'
+"$PBUS" unregister-listener huge >/dev/null
+"$PBUS" enable big >/dev/null
+
+# ------------------------------------------- a spool file that is not one ---
+# The spool is world-writable by design, so its files cannot be trusted. Both
+# of these are planted the way their emitter could plant them, then announced
+# on the bus as if they were an ordinary payload.
+spool_emit() {
+	printf 'PBUS2\t%s\t%s\t%s\t%s\t0\t@spool\n' "release" \
+		"$(cat "$WORK/keys/release")" "$1" "$(date +%s)" >"$PBUS_RUN/bus"
+	sleep 0.6
+}
+echo "a secret the daemon should not read" >"$WORK/out/secret.txt"
+rm -f "$WORK/out/big.txt"
+ln -s "$WORK/out/secret.txt" "$PBUS_RUN/spool/aaaaaaaaaaaaaaaa"
+spool_emit aaaaaaaaaaaaaaaa
+check "a symlink left in the spool is refused" '
+	grep -q "is a symbolic link, refused" "$PBUS_LOG"'
+check "the file it pointed at was not delivered" '
+	[[ ! -s "$WORK/out/big.txt" ]] || ! grep -q "should not read" "$WORK/out/big.txt"'
+check "the refused link is cleaned up" '
+	[[ ! -e "$PBUS_RUN/spool/aaaaaaaaaaaaaaaa" && ! -e "$PBUS_RUN/stage/aaaaaaaaaaaaaaaa" ]]'
+
+rm -f "$WORK/out/big.txt"
+ln "$WORK/out/secret.txt" "$PBUS_RUN/spool/bbbbbbbbbbbbbbbb"
+spool_emit bbbbbbbbbbbbbbbb
+check "a hard link left in the spool is refused" '
+	grep -q "is a hard link to another file, refused" "$PBUS_LOG"'
+check "the hard link is cleaned up" '
+	[[ ! -e "$PBUS_RUN/stage/bbbbbbbbbbbbbbbb" ]]'
+
+# ---------------------------------------------------- the payload cap ---
+sed -i "s|^max_payload=.*|max_payload=4096|" "$PBUS_ETC/pbus.conf"
+"$PBUS" reload >/dev/null 2>&1 || kill -HUP "$DAEMON_PID"
+sleep 0.4
+rm -f "$WORK/out/big.txt"
+head -c 20000 /dev/zero | tr '\0' 'b' >"$WORK/out/capped-payload"
+"$PBUS" emit release --payload-file "$WORK/out/capped-payload" -q
+check "a payload beyond max_payload is trimmed" '
+	wait_file "$WORK/out/big.txt" 80 && [[ $(tr -d " " < "$WORK/out/big.txt") == 4096 ]]'
+check "the trim is logged" 'grep -q "payload truncated to 4096 bytes" "$PBUS_LOG"'
+sed -i "s|^max_payload=.*|max_payload=1048576|" "$PBUS_ETC/pbus.conf"
+"$PBUS" reload >/dev/null 2>&1 || kill -HUP "$DAEMON_PID"
+sleep 0.4
 
 # ------------------------------------------------ hostile nonce (traversal)
 echo "target" >"$WORK/out/target.txt"

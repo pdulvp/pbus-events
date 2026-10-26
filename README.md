@@ -127,12 +127,19 @@ description=Rebuild and publish the site
 | --- | --- |
 | `PBUS_EVENT` | real name of the event (useful with glob patterns) |
 | `PBUS_PAYLOAD` | payload, also fed to standard input — untrusted, see above |
+| `PBUS_PAYLOAD_SIZE` | its size in bytes, always set |
 | `PBUS_EVENT_ID` | id of the emission, repeated in the log |
 | `PBUS_TS` | timestamp of the emission |
 | `PBUS_LISTENER` | identifier of the listener |
 
 Standard output and standard error go to `/var/log/pbus/pbus.log`, prefixed
 with the listener's id.
+
+Above 100 000 bytes `PBUS_PAYLOAD` is left out: the kernel refuses an `execve`
+whose environment carries a string that long, so setting it would stop the
+command from running at all. Standard input carries the payload whatever its
+size, and `PBUS_PAYLOAD_SIZE` tells an empty payload from an omitted one. The
+daemon reads at most `max_payload` bytes, 1 MiB by default.
 
 ## The payload is untrusted
 

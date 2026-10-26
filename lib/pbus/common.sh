@@ -37,6 +37,7 @@ PBUS_LISTENERS_DIR="$PBUS_ETC/listeners.d"
 PBUS_AUTH_DIR="$PBUS_VAR/auth"
 PBUS_FIFO="$PBUS_RUN/bus"
 PBUS_SPOOL="$PBUS_RUN/spool"
+PBUS_STAGE="$PBUS_RUN/stage"
 PBUS_REPLY="$PBUS_RUN/reply"
 PBUS_PIDFILE="$PBUS_RUN/pbusd.pid"
 
@@ -44,11 +45,19 @@ PBUS_PIDFILE="$PBUS_RUN/pbusd.pid"
 PBUS_LOG_LEVEL="info"
 PBUS_MAX_JOBS="16"
 PBUS_DEFAULT_TIMEOUT="900"
+PBUS_MAX_PAYLOAD="1048576"
 
 # Longest line we will write to the pipe. PIPE_BUF is 4096 bytes on Linux;
 # below that, concurrent writes are atomic. Leave room for the header, and
 # send larger payloads through the spool instead.
 PBUS_MAX_LINE=3500
+
+# Longest payload we will put in a listener's environment. The kernel refuses
+# an execve whose single argument or environment string exceeds
+# MAX_ARG_STRLEN, 32 pages, 131072 bytes on Linux: over that, "env" fails with
+# E2BIG and the command never runs at all. Below the limit by enough that the
+# "PBUS_PAYLOAD=" prefix and the rest of the environment cannot reach it.
+PBUS_MAX_ENV_PAYLOAD=100000
 
 # ------------------------------------------------------------------ log ---
 
@@ -156,6 +165,7 @@ pbus_load_conf() {
 	[[ -n ${c[log_file]:-} ]]       && PBUS_LOG="${c[log_file]}"
 	[[ -n ${c[max_jobs]:-} ]]       && PBUS_MAX_JOBS="${c[max_jobs]}"
 	[[ -n ${c[default_timeout]:-} ]] && PBUS_DEFAULT_TIMEOUT="${c[default_timeout]}"
+	[[ ${c[max_payload]:-} =~ ^[0-9]+$ ]] && PBUS_MAX_PAYLOAD="${c[max_payload]}"
 	return 0
 }
 

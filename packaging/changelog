@@ -1,5 +1,13 @@
 pbus (@VERSION@) unstable; urgency=medium
 
+  * The daemon no longer reads a spooled payload where its emitter left it:
+    the file is moved into /run/pbus/stage, which only root may write, before
+    being checked and read, closing a race where a symbolic link could be put
+    in its place between the two. A hard link is refused on its link count.
+  * max_payload in pbus.conf, 1 MiB by default, bounds what the daemon reads.
+    A payload over 100000 bytes is no longer put in the environment, where it
+    made execve fail and stopped the command from running at all; standard
+    input carries it and PBUS_PAYLOAD_SIZE is always set.
   * Events can declare payload_pattern, an extended regular expression the
     payload must match; the daemon refuses anything else before a listener
     runs and "pbus emit" exits 6. Documented alongside the quoting rule a
