@@ -46,7 +46,11 @@ hour.
 .SH SECURITY
 The pipe is created mode
 .BR 0622 :
-any user may emit, nobody but the daemon may read the traffic. The key
+any user may emit, nobody but the daemon may read the traffic. The daemon
+holds it open read-write and closes that descriptor before executing a
+listener, so a triggered command inherits no handle on the bus — it could
+otherwise read the keys of every other event as they pass, and consume
+messages addressed to the daemon. The key
 therefore travels in the clear through a channel only the daemon reads; on
 disk, only a salted SHA\-256 hash is kept, mode
 .BR 0600 .
@@ -105,6 +109,16 @@ and
 .I fs.protected_hardlinks
 guard the same ground and are enabled by default on Debian, but the daemon no
 longer depends on them.
+.PP
+Acknowledgements are written in
+.I /run/pbus/stage
+and renamed into
+.IR /run/pbus/reply ,
+which is world-writable: an emitter chooses its own emission id, so a
+temporary file named there could be planted as a symbolic link in advance and
+followed as root.
+.BR rename (2)
+replaces a link at its destination instead of following it.
 .PP
 The log is created
 .B 0640

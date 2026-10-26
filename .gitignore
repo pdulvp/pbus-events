@@ -1,2 +1,6 @@
 build/
 docs/plans/
+
+# NFS silly-rename placeholders: a deleted or replaced file still held
+# open by a process. They appear and vanish on their own.
+.nfs*

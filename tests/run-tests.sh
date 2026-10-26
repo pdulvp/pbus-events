@@ -331,6 +331,35 @@ printf 'PBUS1\trelease\tkey\tdeadbeef\tts\t-\n' >"$PBUS_RUN/bus"
 sleep 0.3
 check "an unknown protocol version is ignored" 'grep -q "unknown protocol" "$PBUS_LOG"'
 
+# ------------------------------------------- what a listener can reach ---
+# The daemon holds the bus open read-write; a listener must not inherit it,
+# or it could read every other event's key in the clear and consume messages
+# meant for the daemon.
+"$PBUS" register-listener release --id fds -u "$SELF" \
+	/bin/sh -c "ls -l /proc/self/fd > $WORK/out/fds.txt 2>&1" >/dev/null
+"$PBUS" emit release -q
+wait_file "$WORK/out/fds.txt" 50
+check "a listener is handed no descriptor on the bus" '
+	! grep -q "$PBUS_RUN/bus" "$WORK/out/fds.txt"'
+"$PBUS" unregister-listener fds >/dev/null
+
+# The emitter chooses its own nonce, so it can create the name the daemon is
+# about to write its acknowledgement to. Here the emitter, the link and the
+# daemon are one account, which is what makes this visible: under the service
+# unit fs.protected_symlinks would hide the defect rather than fix it.
+echo "do not overwrite me" >"$WORK/out/reply-victim.txt"
+ln -s "$WORK/out/reply-victim.txt" "$PBUS_RUN/reply/.cccccccccccccccc.tmp"
+printf 'PBUS2\t%s\t%s\t%s\t%s\t1\t-\n' "release" "$(cat "$WORK/keys/release")" \
+	"cccccccccccccccc" "$(date +%s)" >"$PBUS_RUN/bus"
+sleep 0.6
+check "a symlink planted at the reply temporary name is not written through" '
+	[[ $(cat "$WORK/out/reply-victim.txt") == "do not overwrite me" ]]'
+check "the acknowledgement was still delivered" '
+	[[ -f "$PBUS_RUN/reply/cccccccccccccccc" ]] &&
+	grep -q accepted "$PBUS_RUN/reply/cccccccccccccccc"'
+rm -f "$PBUS_RUN/reply/.cccccccccccccccc.tmp" "$PBUS_RUN/reply/cccccccccccccccc"
+check "nothing was left in the staging directory" '[[ -z $(ls -A "$PBUS_RUN/stage") ]]'
+
 # ------------------------------------------------------ payload pattern ---
 "$PBUS" register-event shaped -d "payload must look like a version" \
 	--payload-pattern '^v[0-9]+(\.[0-9]+)*$' --save >/dev/null

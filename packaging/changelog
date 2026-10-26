@@ -1,5 +1,12 @@
 pbus (@VERSION@) unstable; urgency=medium
 
+  * A triggered command no longer inherits the daemon's descriptor on the
+    bus, which let any listener read the keys of every other event as they
+    passed and consume messages addressed to the daemon.
+  * Acknowledgements are written in /run/pbus/stage and renamed into
+    /run/pbus/reply: an emitter chooses its own emission id, so it could
+    plant the temporary name as a symbolic link and have the daemon write
+    through it as root.
   * The log is 0640 root:adm and /var/log/pbus 0750, because a listener's
     output is often the payload it was handed; "pbus log" now needs root or
     membership of adm. LogsDirectory= leaves the unit so systemd stops

@@ -188,7 +188,8 @@ only. The emitter presents the key, the daemon hashes it and compares in
 constant time. `rotate-key` invalidates the previous one immediately.
 
 The bus is a named pipe in mode `0622`: any user may emit, but only the daemon
-reads what passes through. The key therefore travels in the clear, in a
+reads what passes through — it closes its own descriptor on the pipe before
+executing a listener, so a triggered command cannot read the traffic either. The key therefore travels in the clear, in a
 channel nobody else can read. To keep it out of `ps`, prefer the keyring
 (`pbus save-key`), `--key-file` or `PBUS_KEY` over `--key`.
 
