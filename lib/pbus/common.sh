@@ -169,6 +169,16 @@ pbus_valid_pattern() {
 	[[ $1 =~ ^[A-Za-z0-9*?][A-Za-z0-9._:*?@-]{0,63}$ ]]
 }
 
+# True when bash can compile the argument as an extended regular expression.
+# A broken ERE makes [[ =~ ]] return 2 and print to stderr, which is neither a
+# match nor a mismatch: everything that uses a pattern from a file has to tell
+# that third case apart and refuse, never wave it through.
+pbus_valid_regex() {
+	local probe
+	probe=$([[ "" =~ $1 ]] 2>&1; printf '%s' "$?")
+	[[ $probe == 0 || $probe == 1 ]]
+}
+
 # -------------------------------------------------------------- secrets ---
 
 pbus_random_hex() {

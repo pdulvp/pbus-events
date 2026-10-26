@@ -258,6 +258,53 @@ printf 'PBUS1\trelease\tkey\tdeadbeef\tts\t-\n' >"$PBUS_RUN/bus"
 sleep 0.3
 check "an unknown protocol version is ignored" 'grep -q "unknown protocol" "$PBUS_LOG"'
 
+# ------------------------------------------------------ payload pattern ---
+"$PBUS" register-event shaped -d "payload must look like a version" \
+	--payload-pattern '^v[0-9]+(\.[0-9]+)*$' --save >/dev/null
+check "register-event stores the pattern" '
+	grep -q "payload_pattern=\^v" "$PBUS_ETC/events.d/shaped.event"'
+check "an uncompilable pattern is refused at registration" '
+	! "$PBUS" register-event broken --payload-pattern "^(unclosed" >/dev/null 2>&1'
+check "test prints the pattern" '[[ $("$PBUS" test shaped) == *"must match"* ]]'
+
+"$PBUS" register-listener shaped --id shaped -u "$SELF" \
+	/bin/sh -c "cat > $WORK/out/shaped.txt" >/dev/null
+"$PBUS" emit shaped --payload "v1.2.3" -q
+check "a payload matching the pattern reaches the listener" '
+	wait_file "$WORK/out/shaped.txt" 50 && [[ $(cat "$WORK/out/shaped.txt") == "v1.2.3" ]]'
+
+rm -f "$WORK/out/shaped.txt"
+"$PBUS" emit shaped --payload '--use-compress-program=./p.sh' -q >"$WORK/out/shapedbad" 2>&1
+SHAPED_RC=$?
+check "emit exits 6 on a payload the pattern refuses" '(( SHAPED_RC == 6 ))'
+check "emit says the payload was the problem" '
+	grep -q "does not match the pattern" "$WORK/out/shapedbad"'
+check "the refused payload never reaches the listener" '
+	sleep 0.5; [[ ! -e "$WORK/out/shaped.txt" ]]'
+check "the refusal is logged without the payload" '
+	grep -q "payload refused for event shaped" "$PBUS_LOG" &&
+	! grep -q "use-compress-program" "$PBUS_LOG"'
+
+# A pattern the shell cannot compile must refuse, not wave the payload past.
+sed -i "s|^payload_pattern=.*|payload_pattern=^(unclosed|" "$PBUS_ETC/events.d/shaped.event"
+"$PBUS" emit shaped --payload "v1.2.3" -q >/dev/null 2>&1
+BROKEN_RC=$?
+check "an unusable pattern denies the emission" '(( BROKEN_RC != 0 ))'
+check "the configuration fault is logged" '
+	grep -q "payload_pattern is not a usable expression" "$PBUS_LOG"'
+check "no listener ran for the denied emission" '
+	sleep 0.5; [[ ! -e "$WORK/out/shaped.txt" ]]'
+
+# ^$ is how an event says it carries no payload at all.
+sed -i "s|^payload_pattern=.*|payload_pattern=^$|" "$PBUS_ETC/events.d/shaped.event"
+"$PBUS" emit shaped -q >/dev/null 2>&1
+EMPTY_RC=$?
+check "an empty payload passes ^\$" '(( EMPTY_RC == 0 ))'
+"$PBUS" emit shaped --payload "anything" -q >/dev/null 2>&1
+ANY_RC=$?
+check "^\$ refuses any payload" '(( ANY_RC == 6 ))'
+"$PBUS" unregister-event shaped --purge-listeners >/dev/null
+
 # ------------------------------------------------------- manual editing ---
 sed -i "s|^command=.*|command=/bin/sh -c \"echo manual > $WORK/out/manual.txt\"|" "$PBUS_ETC/listeners.d/site.listener"
 "$PBUS" emit release -q

@@ -45,11 +45,31 @@ set -e
 event="$PBUS_EVENT"       # release.published
 version="$PBUS_PAYLOAD"   # v1.2.3, also available on standard input
 git -C /srv/site pull --ff-only
-make -C /srv/site publish VERSION="$version"
+make -C /srv/site publish -- VERSION="$version"
 ```
 
 Everything the script writes to standard output or standard error is picked up
 in `/var/log/pbus/pbus.log`, prefixed with the listener's id.
+
+### The payload is whatever the emitter typed
+
+`$version` here is not a version number: it is a string chosen by whoever
+holds the key, and this script runs as `www-data`. Quoting it keeps it one
+argument, which is necessary but not sufficient — a payload beginning with a
+dash is still read as an option, and for many commands one option is enough
+to run a program of the emitter's choosing. Hence the `--` above, which ends
+the option list and makes everything after it an operand.
+
+Where the shape is predictable, say so once on the event and the daemon
+refuses the rest before this script is even started:
+
+```sh
+sudo pbus register-event release.published \
+     --payload-pattern '^v[0-9]+(\.[0-9]+)*$'
+```
+
+`pbus test release.published` prints the pattern alongside the listeners it
+would trigger.
 
 ---
 

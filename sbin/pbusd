@@ -195,6 +195,28 @@ pbusd_auth_ok() {
 	pbus_equal_ct "$expected" "$(pbus_hash "$salt" "$given")"
 }
 
+# pbusd_payload_ok <event> <payload>
+#
+# An event may declare the shape its payload must have. A listener cannot be
+# made safe by the daemon — it can always read the payload back into a command
+# line, from the environment or from standard input — so this is the one place
+# a hostile shape can be refused before any command runs, whatever the
+# listener does with it afterwards.
+pbusd_payload_ok() {
+	local event="$1" payload="$2"
+	local -A E=()
+	pbus_kv_load "$(pbus_event_file "$event")" E || return 1
+	local pat="${E[payload_pattern]:-}"
+	[[ -n $pat ]] || return 0
+	# Fails closed: an expression bash cannot compile is a configuration
+	# fault, and a configuration fault must not let a payload through.
+	if ! pbus_valid_regex "$pat"; then
+		pbus_log error "event $event: payload_pattern is not a usable expression"
+		return 1
+	fi
+	[[ $payload =~ $pat ]]
+}
+
 # ------------------------------------------------------------ acknowledge --
 
 # pbusd_reply <want> <nonce> <status> [detail]
@@ -268,6 +290,14 @@ pbusd_handle() {
 		fi
 	elif [[ -n $enc && $enc != "-" ]]; then
 		payload=$(printf '%s' "$enc" | base64 -d 2>/dev/null) || payload=""
+	fi
+
+	# Checked before the listeners are even selected, and the payload itself is
+	# never logged: it is the emitter's text, and the log is read by people.
+	if ! pbusd_payload_ok "$event" "$payload"; then
+		pbus_log warn "payload refused for event $event (id=$eid)"
+		pbusd_reply "$want" "$nonce" denied bad-payload
+		return 0
 	fi
 
 	(( PBUSD_EVENTS++ ))

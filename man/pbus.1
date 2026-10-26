@@ -28,12 +28,18 @@ List events, how many listeners each has, and whether they require a key.
 .BI "show-event " name
 Detail one event.
 .TP
-.BI "register-event " name " [\-d " description "] [\-\-no\-key] [\-s] [\-f]"
+.BI "register-event " name " [\-d " description "] [\-\-no\-key] [\-p " ere "] [\-s] [\-f]"
 Declare an event and print, once only, the key emitters must present. With
 .BR \-\-no\-key ,
 the event is open to any local emission. With
 .BR \-s ,
-the key is kept in the user's keyring.
+the key is kept in the user's keyring. With
+.BR \-p / \-\-payload\-pattern ,
+the daemon refuses any emission whose payload does not match that extended
+regular expression, before a single listener runs;
+.B ^$
+declares an event that carries no payload. An expression that cannot be
+compiled refuses every emission rather than letting them through.
 .TP
 .BI "unregister-event " name " [\-\-purge\-listeners]"
 Remove an event, its secret, and optionally its listeners.
@@ -93,7 +99,10 @@ the
 variable, or the keyring.
 .B emit
 waits for the daemon's verdict and exits 0 when the event was accepted, 1 on a
-local error, 3 when the key was refused, 4 when the event is unknown, and 5
+local error, 3 when the key was refused, 4 when the event is unknown, 6 when
+the payload does not match the event's
+.IR payload_pattern ,
+and 5
 when no acknowledgement arrived within
 .BR \-\-ack\-timeout
 (5 seconds by default).
@@ -112,7 +121,31 @@ Show what would run, without running it.
 Real name of the event emitted.
 .TP
 .B PBUS_PAYLOAD
-Payload, also fed to the command's standard input.
+Payload, also fed to the command's standard input. It is chosen by the
+emitter, so it is untrusted input: quote it
+.B and
+end the command's options with
+.BR \-\- ,
+as in
+.RB \(lq "cmd \-\- \(dq$PBUS_PAYLOAD\(dq" \(rq .
+Quoting alone stops the word splitting and the globbing but not a payload read
+as an option, and a single option such as
+.B \-\-use\-compress\-program=
+is enough to run a program of the emitter's choosing. Where a command takes no
+.BR \-\- ,
+write
+.RB \(lq ./\(dq$PBUS_PAYLOAD\(dq \(rq
+for a path;
+.B echo
+ignores
+.B \-\-
+and prints it, so prefer
+.BR "printf '%s\en'" .
+Never pass the payload through a second shell. See
+.I payload_pattern
+in
+.BR pbusd (8)
+for refusing a hostile shape outright.
 .TP
 .B PBUS_EVENT_ID
 Unique id of the emission, repeated in the log.

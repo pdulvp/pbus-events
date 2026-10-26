@@ -69,6 +69,18 @@ A listener with
 is as dangerous as a line in root's crontab: grant write access to
 .I /etc/pbus/listeners.d
 to administrators only.
+.PP
+An event may declare
+.I payload_pattern
+in its
+.I .event
+file, an extended regular expression the payload must match. It is checked
+after authentication and before any listener is selected, so a hostile payload
+is refused however the listeners are written; the emitter is told, and
+.B pbus emit
+exits 6. The payload itself is never written to the log. An expression the
+shell cannot compile is a configuration fault and refuses every emission for
+that event.
 .SH CONFIGURATION
 .TP
 .B log_level

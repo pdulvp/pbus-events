@@ -75,19 +75,24 @@ event_auth_mode() {
 # -------------------------------------------------------------- events ---
 
 cmd_register_event() {
-	local name="" desc="" auth="key" save=0 force=0
+	local name="" desc="" auth="key" save=0 force=0 pattern=""
 	while (( $# )); do
 		case "$1" in
 			-d|--description) desc="${2:-}"; shift 2 ;;
 			--no-key) auth="none"; shift ;;
+			-p|--payload-pattern) pattern="${2:-}"; shift 2 ;;
 			-s|--save) save=1; shift ;;
 			-f|--force) force=1; shift ;;
 			-*) pbus_die "unknown option: $1" ;;
 			*) [[ -z $name ]] && name="$1" || pbus_die "unexpected argument: $1"; shift ;;
 		esac
 	done
-	[[ -n $name ]] || pbus_die "usage: pbus register-event <name> [-d description] [--no-key] [--save]"
+	[[ -n $name ]] || pbus_die "usage: pbus register-event <name> [-d description] [--no-key] [--payload-pattern ERE] [--save]"
 	pbus_valid_name "$name" || pbus_die "invalid event name: $name (letters, digits, . _ : -)"
+	if [[ -n $pattern ]]; then
+		[[ $pattern == *$'\n'* ]] && pbus_die "a payload pattern cannot contain a newline"
+		pbus_valid_regex "$pattern" || pbus_die "invalid payload pattern: $pattern"
+	fi
 	need_admin "register-event"
 	ensure_dirs
 
@@ -101,6 +106,7 @@ cmd_register_event() {
 	pbus_kv_set "$ef" name "$name"
 	pbus_kv_set "$ef" description "$desc"
 	pbus_kv_set "$ef" auth "$auth"
+	pbus_kv_set "$ef" payload_pattern "$pattern"
 	pbus_kv_set "$ef" created "$(pbus_timestamp)"
 
 	if [[ $auth == none ]]; then
@@ -437,6 +443,7 @@ await_reply() {
 				denied)
 					case "$detail" in
 						unknown-event) return 4 ;;
+						bad-payload)   return 6 ;;
 						*)             return 3 ;;
 					esac ;;
 				*) return 5 ;;
@@ -533,6 +540,8 @@ cmd_emit() {
 		4) printf 'pbus: event "%s" refused: the daemon does not know this event (id %s)\n' "$event" "$nonce" >&2 ;;
 		5) printf 'pbus: event "%s" was written to the bus but the daemon did not acknowledge it within %ss (id %s)\n' \
 				"$event" "$ack_timeout" "$nonce" >&2 ;;
+		6) printf 'pbus: event "%s" refused: the payload does not match the pattern this event declares (id %s)\n' \
+				"$event" "$nonce" >&2 ;;
 	esac
 	return "$rc"
 }
@@ -541,6 +550,9 @@ cmd_test() {
 	local event="${1:-}"
 	[[ -n $event ]] || pbus_die "usage: pbus test <event>"
 	printf 'What "%s" would trigger:\n\n' "$event"
+	local pat
+	pat=$(pbus_kv_get "$(pbus_event_file "$event")" payload_pattern) || pat=""
+	[[ -n $pat ]] && printf '  payload must match %s\n\n' "$pat"
 	local lid found=0
 	local -A L
 	while read -r lid; do

@@ -1,5 +1,9 @@
 pbus (@VERSION@) unstable; urgency=medium
 
+  * Events can declare payload_pattern, an extended regular expression the
+    payload must match; the daemon refuses anything else before a listener
+    runs and "pbus emit" exits 6. Documented alongside the quoting rule a
+    listener has to follow, since the payload is chosen by the emitter.
   * A listener must now name the account it runs as. "register-listener"
     refuses without -u and pbusd refuses a listener whose file has no user=:
     an absent one used to mean root. Add user=root to restore the previous

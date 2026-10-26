@@ -48,7 +48,7 @@ commands; `help` lists them.
 | Command | Purpose |
 | --- | --- |
 | `list-events`, `show-event <name>` | inventory of events |
-| `register-event <name> [-d …] [--no-key] [--save]` | declare an event, return its key |
+| `register-event <name> [-d …] [--no-key] [--payload-pattern …] [--save]` | declare an event, return its key |
 | `unregister-event <name> [--purge-listeners]` | remove an event |
 | `rotate-key <name> [--save]` | replace the key |
 | `save-key <name>` | put a key in your keyring |
@@ -126,13 +126,50 @@ description=Rebuild and publish the site
 | Variable | Content |
 | --- | --- |
 | `PBUS_EVENT` | real name of the event (useful with glob patterns) |
-| `PBUS_PAYLOAD` | payload, also fed to standard input |
+| `PBUS_PAYLOAD` | payload, also fed to standard input — untrusted, see above |
 | `PBUS_EVENT_ID` | id of the emission, repeated in the log |
 | `PBUS_TS` | timestamp of the emission |
 | `PBUS_LISTENER` | identifier of the listener |
 
 Standard output and standard error go to `/var/log/pbus/pbus.log`, prefixed
 with the listener's id.
+
+## The payload is untrusted
+
+Whoever holds the key chooses every byte of the payload, and the command it
+reaches usually runs with privileges. It arrives as data — in `PBUS_PAYLOAD`
+and on standard input, never as part of the command string — so the listener
+decides whether it stays data. Against a listener as ordinary as
+`tar -cf backup.tar $PBUS_PAYLOAD`:
+
+| The listener writes | A payload of | Result |
+| --- | --- | --- |
+| `$PBUS_PAYLOAD` | `--checkpoint=1 --checkpoint-action=exec=./p.sh f` | the script runs |
+| `$PBUS_PAYLOAD` | `*` | acts on files nobody named |
+| `"$PBUS_PAYLOAD"` | `--use-compress-program=./p.sh` | the script runs |
+| `-- "$PBUS_PAYLOAD"` | either of the above | treated as a filename |
+
+So quote it **and** end the options with `--`. Two caveats: `echo` ignores
+`--` and prints it, so use `printf '%s\n' "$PBUS_PAYLOAD"`; and where a
+command takes no `--` and the payload is a path, write `./"$PBUS_PAYLOAD"`.
+Never pass it through a second shell — `eval`, `sh -c "… $PBUS_PAYLOAD"`,
+`ssh host "… $PBUS_PAYLOAD"`.
+
+Since no amount of care in one listener protects another, an event can also
+declare the shape its payload must have, and the daemon refuses anything else
+before a single command runs:
+
+```sh
+sudo pbus register-event release --payload-pattern '^v[0-9]+(\.[0-9]+)*$'
+pbus emit release --payload 'v1.2.3'          # accepted
+pbus emit release --payload '--use-compress-program=./p.sh'
+pbus: event "release" refused: the payload does not match the pattern this event declares (id …)
+```
+
+The pattern is an extended regular expression, matched against the whole
+payload; `^$` is how an event says it carries no payload at all. An expression
+the shell cannot compile refuses every emission rather than letting them
+through, and says so in the log.
 
 ## Keys and security
 
