@@ -115,6 +115,15 @@ Show what would run, without running it.
 .SS Misc
 .TP
 .BR status ", " "log [\-n " N "] [\-f]" ", " reload ", " shell ", " help ", " version
+.IP
+.B log
+reads
+.IR /var/log/pbus/pbus.log ,
+which is
+.B 0640 root:adm
+because a listener's output often contains the payload it was handed: reading
+it needs root or membership of
+.BR adm .
 .SH ENVIRONMENT OF A TRIGGERED COMMAND
 .TP
 .B PBUS_EVENT

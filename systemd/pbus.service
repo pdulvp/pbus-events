@@ -14,8 +14,9 @@ RuntimeDirectory=pbus
 RuntimeDirectoryMode=0755
 StateDirectory=pbus
 StateDirectoryMode=0750
-LogsDirectory=pbus
-LogsDirectoryMode=0755
+# No LogsDirectory=: systemd would reset the owner and mode of /var/log/pbus
+# at every start, and the log is deliberately 0750 root:adm. The directory
+# comes from tmpfiles.d, and pbusd creates the file itself 0640.
 KillMode=mixed
 TimeoutStopSec=30
 

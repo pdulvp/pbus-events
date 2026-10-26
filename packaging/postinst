@@ -5,7 +5,8 @@ case "$1" in
 	configure)
 		install -d -m 0755 /etc/pbus/events.d /etc/pbus/listeners.d
 		install -d -m 0700 /etc/pbus/keys
-		install -d -m 0755 /var/log/pbus
+		install -d -m 0750 -g adm /var/log/pbus 2>/dev/null \
+			|| install -d -m 0750 /var/log/pbus
 		install -d -m 0750 /var/lib/pbus
 		install -d -m 0700 /var/lib/pbus/auth
 

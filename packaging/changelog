@@ -1,5 +1,9 @@
 pbus (@VERSION@) unstable; urgency=medium
 
+  * The log is 0640 root:adm and /var/log/pbus 0750, because a listener's
+    output is often the payload it was handed; "pbus log" now needs root or
+    membership of adm. LogsDirectory= leaves the unit so systemd stops
+    resetting the mode at each start. A spooled payload is 0600.
   * The daemon no longer reads a spooled payload where its emitter left it:
     the file is moved into /run/pbus/stage, which only root may write, before
     being checked and read, closing a race where a symbolic link could be put

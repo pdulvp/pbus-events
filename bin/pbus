@@ -505,8 +505,10 @@ cmd_emit() {
 		# and the line carries only a marker.
 		local sf="$PBUS_SPOOL/$nonce"
 		[[ -d $PBUS_SPOOL ]] || pbus_die "spool is missing ($PBUS_SPOOL): is pbusd running?"
+		# 0600, from the umask above: the only reader is the daemon, which is
+		# root in a real install and this same account in a test instance.
+		# Nothing else has any business with a payload left here.
 		( umask 077; printf '%s' "$payload" >"$sf" ) || pbus_die "cannot write to the spool"
-		chmod 0644 "$sf" 2>/dev/null
 		printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$PBUS_PROTO" "$event" "$auth" "$nonce" "$ts" "$wait_ack" "@spool"
 	fi
 

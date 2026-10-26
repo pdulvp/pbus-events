@@ -133,7 +133,9 @@ description=Rebuild and publish the site
 | `PBUS_LISTENER` | identifier of the listener |
 
 Standard output and standard error go to `/var/log/pbus/pbus.log`, prefixed
-with the listener's id.
+with the listener's id. That log is `0640 root:adm`, because what a listener
+prints is often the payload it was handed: `pbus log` therefore needs `sudo`,
+or membership of `adm`.
 
 Above 100 000 bytes `PBUS_PAYLOAD` is left out: the kernel refuses an `execve`
 whose environment carries a string that long, so setting it would stop the

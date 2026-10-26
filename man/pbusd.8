@@ -105,6 +105,15 @@ and
 .I fs.protected_hardlinks
 guard the same ground and are enabled by default on Debian, but the daemon no
 longer depends on them.
+.PP
+The log is created
+.B 0640
+and, where the group exists,
+.BR adm :
+a listener's standard output and standard error are copied into it, and what a
+listener prints is frequently the payload it was given. The spool file an
+emitter writes is
+.BR 0600 .
 .SH CONFIGURATION
 .TP
 .B log_level

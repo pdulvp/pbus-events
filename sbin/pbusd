@@ -46,6 +46,17 @@ pbusd_setup() {
 	mkdir -p "$PBUS_EVENTS_DIR" "$PBUS_LISTENERS_DIR" "$PBUS_AUTH_DIR" "$PBUS_RUN" "$logdir" || return 1
 	chmod 0700 "$PBUS_AUTH_DIR" 2>/dev/null || true
 
+	# Listeners write to this log, and what a listener prints may well be the
+	# payload it was handed, which its emitter chose. Created 0640 rather than
+	# left to the daemon's umask, so a secret passing through an event does not
+	# become readable by every account on the machine. The group is adm where
+	# that exists, the usual arrangement for a log an operator may need.
+	if [[ ! -e $PBUS_LOG ]]; then
+		( umask 027; : >"$PBUS_LOG" ) 2>/dev/null || true
+	fi
+	chmod 0640 "$PBUS_LOG" 2>/dev/null || true
+	chgrp adm "$PBUS_LOG" 2>/dev/null || true
+
 	# The spool holds payloads too large for one atomic write. Mode 1733: all
 	# may write, none may list, and the sticky bit stops anyone removing a
 	# file that is not theirs.

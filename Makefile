@@ -75,7 +75,7 @@ install:
 	chmod 0644 $(DESTDIR)$(docdir)/copyright
 	$(call subst_version,packaging/changelog,$(DESTDIR)$(docdir)/changelog.Debian,0644)
 	gzip -9nf $(DESTDIR)$(docdir)/changelog.Debian
-	install -d -m 0755 $(DESTDIR)/var/log/pbus
+	install -d -m 0750 $(DESTDIR)/var/log/pbus
 	install -d -m 0750 $(DESTDIR)/var/lib/pbus
 	install -d -m 0700 $(DESTDIR)/var/lib/pbus/auth
 

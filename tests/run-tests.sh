@@ -128,6 +128,7 @@ check "register-event succeeds" '[[ -f "$PBUS_ETC/events.d/release.event" ]]'
 check "the key is shown once" 'grep -q "key: pbk_" "$WORK/out/reg"'
 check "the key lands in the keyring" '[[ -s "$WORK/keys/release" ]]'
 check "the keyring file is 0600" '[[ $(stat -c %a "$WORK/keys/release") == 600 ]]'
+check "the log file is 0640" '[[ $(stat -c %a "$PBUS_LOG") == 640 ]]'
 check "the auth file is 0600" '[[ $(stat -c %a "$PBUS_VAR/auth/release.auth") == 600 ]]'
 check "the plaintext key is not kept" '! grep -qi "pbk_" "$PBUS_VAR/auth/release.auth" "$PBUS_ETC/events.d/release.event"'
 check "a duplicate is refused" '! "$PBUS" register-event release >/dev/null 2>&1'
@@ -265,6 +266,15 @@ check "PBUS_PAYLOAD_SIZE still reports the real size" '
 check "the omission is logged" 'grep -q "PBUS_PAYLOAD omitted" "$PBUS_LOG"'
 "$PBUS" unregister-listener huge >/dev/null
 "$PBUS" enable big >/dev/null
+
+# A payload refused on its key is never read, so the file its emitter wrote
+# stays behind: the one deterministic moment to look at its mode.
+head -c 20000 /dev/zero | tr '\0' 'c' >"$WORK/out/left-payload"
+"$PBUS" emit release --key "pbk_wrong" --payload-file "$WORK/out/left-payload" -q >/dev/null 2>&1
+check "a spooled payload is 0600" '
+	f=$(ls -A "$PBUS_RUN/spool" | head -1)
+	[[ -n $f && $(stat -c %a "$PBUS_RUN/spool/$f") == 600 ]]'
+rm -f "$PBUS_RUN"/spool/*
 
 # ------------------------------------------- a spool file that is not one ---
 # The spool is world-writable by design, so its files cannot be trusted. Both
