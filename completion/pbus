@@ -60,7 +60,7 @@ _pbus() {
 	esac
 
 	case "$cmd" in
-		register-event)    mapfile -t COMPREPLY < <(compgen -W "-d --description --no-key -s --save -f --force" -- "$cur") ;;
+		register-event)    mapfile -t COMPREPLY < <(compgen -W "-d --description --no-key -p --payload-pattern -s --save -f --force" -- "$cur") ;;
 		register-listener) mapfile -t COMPREPLY < <(compgen -W "--id -u --user -w --workdir -t --timeout -d --description --disabled" -- "$cur") ;;
 		emit)              mapfile -t COMPREPLY < <(compgen -W "-p --payload -F --payload-file --stdin -k --key -K --key-file -q --quiet" -- "$cur") ;;
 		log)               mapfile -t COMPREPLY < <(compgen -W "-n -f --follow" -- "$cur") ;;

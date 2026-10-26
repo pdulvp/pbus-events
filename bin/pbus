@@ -627,6 +627,7 @@ EVENTS
   register-event <name> [options]   declare an event and return its key
        -d, --description TEXT
        --no-key                     event with no authentication
+       -p, --payload-pattern ERE    refuse any payload that does not match
        -s, --save                   keep the key in your keyring
        -f, --force                  overwrite an existing event
   unregister-event <name> [--purge-listeners]
@@ -634,9 +635,10 @@ EVENTS
   save-key <name> [--key KEY]       put a key in your keyring
 
 LISTENERS
-  register-listener <event> [options] <command...>
+  register-listener <event> -u <user> [options] <command...>
+       -u, --user USER              run the command as this user (required;
+                                    -u root to say root out loud)
        --id ID                      identifier (derived from the event otherwise)
-       -u, --user USER              run the command as this user
        -w, --workdir DIR            working directory (default /)
        -t, --timeout SECONDS        maximum run time
        -d, --description TEXT
@@ -673,8 +675,11 @@ no acknowledgement arrived. It never waits for the triggered commands
 themselves.
 
 Variables available to a triggered command:
-  PBUS_EVENT, PBUS_PAYLOAD (also on standard input), PBUS_EVENT_ID,
-  PBUS_TS, PBUS_LISTENER
+  PBUS_EVENT, PBUS_PAYLOAD (also on standard input), PBUS_PAYLOAD_SIZE,
+  PBUS_EVENT_ID, PBUS_TS, PBUS_LISTENER
+
+  The payload is chosen by the emitter: quote it and end the options, as in
+  cmd -- "$PBUS_PAYLOAD". Over 100000 bytes it is on standard input only.
 EOT
 }
 
